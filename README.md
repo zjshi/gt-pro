@@ -47,5 +47,5 @@ raw k-mer database files for all 974 species
 all-in-one encoded k-mer database file  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmerdb_sp974.bin`
 
-species taxonomy metadata
+species taxonomy metadata  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/gut_species_taxonomy.tsv`  
