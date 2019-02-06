@@ -110,14 +110,14 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path){
+void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
 	uint32_t lsb = 1;
 	uint32_t b_mask = (lsb << bpb) - lsb;
 
 	uint32_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict<uint32_t>(code_dict);
 
-	auto out_path = "./" + to_string(channel) + ".tsv";
+	auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
 
 	int l = 15;
 	int m = 16;
@@ -290,7 +290,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 }
 
 void display_usage(char* fname){
-	cout << "usage: " << fname << " -d <sckmerdb_path: string> -r <read_len; int; default 90> -t <n_threads; int; default 1> [-h] input1 [input2 ...]\n";
+	cout << "usage: " << fname << " -d <sckmerdb_path: string> -r <read_len; int; default 90> -t <n_threads; int; default 1> -o <out_prefix; string; default: cur_dir/out> [-h] input1 [input2 ...]\n";
 }
 
 int main(int argc, char** argv) {
@@ -302,11 +302,13 @@ int main(int argc, char** argv) {
 
 	char* fname = argv[0];
 	char* db_path = (char *)"";
+	char* oname = (char *)"./out";
+
 	int r_len = 90;
 	int n_threads = 1;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "d:r:t:h")) != -1) {
+	while ((opt = getopt(argc, argv, "d:r:t:o:h")) != -1) {
 		switch (opt) {
 			case 'd':
 				dbflag = true;
@@ -317,6 +319,9 @@ int main(int argc, char** argv) {
 				break;
 			case 't':
 				n_threads = stoi(optarg);
+				break;
+			case 'o':
+				oname = optarg;
 				break;
 			case 'h': case '?':
 				display_usage(fname);
@@ -431,7 +436,7 @@ int main(int argc, char** argv) {
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, ref(lmer_indx), ref(mmers), ref(snps), optind-in_pos, argv[optind]));
+		th_array.push_back(thread(kmer_lookup, ref(lmer_indx), ref(mmers), ref(snps), optind-in_pos, argv[optind], oname));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
