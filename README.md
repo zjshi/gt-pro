@@ -22,14 +22,19 @@ gt-pro2.0 requires C++ compiler to work properly. The compiler should be compati
 
 program usage:  
 
-build your build sckmerdb from k-mer profile files
+build your build sckmerdb from k-mer profile files  
 `sckmerdb_build fpath [fpath ...]`  
 
 genotyping in metagenome samples  
-`gt_pro -d <sckmerdb_path: string> -r <read_len; int; default 90> -t <n_threads; int; default 1> [-h] input1 [input2 ...]`  
+`gt_pro -d <sckmerdb_path: string> -r <read_len; int; default 90> -t <n_threads; int; default 1> -o <output_prefix; string; default ./> [-h] input1 [input2 ...]`  
 
 inspect sckmerdb  
 `sckmerdb_inspect fpath`  
+
+parse gt-pro2.0 raw output (temporal solution)  
+`python3 gtp_parse.py --dict snp_dict.tsv --in </path/to/gt_pro2.0_output> --v2`  
+gtp_parse.py is a parser written in Python script, please see its helper text for more detailed usage.  
+For snp_dict.tsv downloading, please see "Download sckmerdb" section.  
 
 test case:  
 `./sckmerdb_build ./test/275577.sckmers.db.tsv ./test/276044.sckmers.db.tsv > ./test/sckmer_2sps.bin`  
@@ -49,3 +54,6 @@ all-in-one encoded k-mer database file
 
 species taxonomy metadata  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/gut_species_taxonomy.tsv`  
+
+gt-pro raw output parsing dictionary  
+`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/snp_dict.tsv`
