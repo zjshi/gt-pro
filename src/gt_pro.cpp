@@ -132,13 +132,14 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 
 	int cur_pos = 0;
 
-	int rl = 90;
+	int rl = 300;
 	char seq_buf[rl];
 	char lmer_buf[l+1];
 	char mmer_buf[m+1];
 
 	int l_label = 2;
 	bool has_wildcard = false;
+	bool irregular_read = false;
 
 	vector<uint64_t> kmer_matches;
 
@@ -167,14 +168,18 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 				++n_lines;
 				++n_pause;
 
-				if (has_wildcard) {
-					has_wildcard = false;
-					l_label = cur_pos = 0;
-					footprint.clear();
-					continue;
-				}
-
 				if (l_label == 3) {
+					if (cur_pos > 300 || cur_pos < 50) {
+						irregular_read = true;	
+					}
+
+					if (has_wildcard || irregular_read) {
+						has_wildcard = false;
+						irregular_read = false;
+						l_label = cur_pos = 0;
+						footprint.clear();
+						continue;
+					}
 
 					for (int j = 0;  j <= cur_pos - k;  ++j) {
 						for (int z = j;  z < j+l;  ++z) {
@@ -290,7 +295,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 }
 
 void display_usage(char* fname){
-	cout << "usage: " << fname << " -d <sckmerdb_path: string> -r <read_len; int; default 90> -t <n_threads; int; default 1> -o <out_prefix; string; default: cur_dir/out> [-h] input1 [input2 ...]\n";
+	cout << "usage: " << fname << " -d <sckmerdb_path: string> -t <n_threads; int; default 1> -o <out_prefix; string; default: cur_dir/out> [-h] input1 [input2 ...]\n";
 }
 
 int main(int argc, char** argv) {
@@ -304,18 +309,14 @@ int main(int argc, char** argv) {
 	char* db_path = (char *)"";
 	char* oname = (char *)"./out";
 
-	int r_len = 90;
 	int n_threads = 1;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "d:r:t:o:h")) != -1) {
+	while ((opt = getopt(argc, argv, "d:t:o:h")) != -1) {
 		switch (opt) {
 			case 'd':
 				dbflag = true;
 				db_path = optarg;
-				break;
-			case 'r':
-				r_len = stoi(optarg);
 				break;
 			case 't':
 				n_threads = stoi(optarg);
@@ -329,7 +330,7 @@ int main(int argc, char** argv) {
 		}	
 	}
 
-	cout << fname << '\t' << db_path << '\t' << r_len << '\t' << n_threads << endl;
+	cout << fname << '\t' << db_path << '\t' << n_threads << endl;
 
 	if (!dbflag) {
 		cout << "missing argument: -d <sckmerdb_path: string>\n";
