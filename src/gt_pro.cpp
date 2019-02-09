@@ -247,11 +247,12 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 					++l_label;
 				}
 			} else {
-				if (c == 'N') {
-					has_wildcard = true;
-				}
 
 				if (l_label == 3) {
+					if (c == 'N') {
+						has_wildcard = true;
+					}
+
 					seq_buf[cur_pos++] = c;
 				}   
 			}
