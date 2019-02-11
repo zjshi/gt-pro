@@ -247,7 +247,6 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 					++l_label;
 				}
 			} else {
-
 				if (l_label == 3) {
 					if (c == 'N') {
 						has_wildcard = true;

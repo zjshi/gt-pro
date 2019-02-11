@@ -49,8 +49,14 @@ k-mer profile files for all 974 species
 raw k-mer database files for all 974 species  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmer_dbs.tar.bz2`
 
+raw tag SNPs covering k-mer database files for all 974 species  
+`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmer_tag_dbs.tar.bz2`
+
 all-in-one encoded k-mer database file  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmerdb_sp974.bin`
+
+all-in-one encoded tag SNP covering k-mer database file  
+`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmerdb_sp974_tag.bin`
 
 species taxonomy metadata  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/gut_species_taxonomy.tsv`  
