@@ -61,5 +61,5 @@ all-in-one encoded tag SNP covering k-mer database file
 species taxonomy metadata  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/gut_species_taxonomy.tsv`  
 
-gt-pro raw output parsing dictionary  
+gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/snp_dict.tsv`
