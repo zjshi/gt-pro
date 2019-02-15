@@ -80,7 +80,14 @@ def snp_dict_lookup(fpath, gtp_array, v2, out='/dev/stdout'):
 					oppo_type = 1 - gtp_array[gtp_i][2]
 
 					ct_pair[gtp_array[gtp_i][2]] = gtp_array[gtp_i][3]
-					ct_pair[oppo_type] = "0"
+
+					if gtp_i == len(gtp_array) - 1:
+						ct_pair[oppo_type] = "0"
+					else:
+						if gtp_array[gtp_i][0] == gtp_array[gtp_i+1][0] and gtp_array[gtp_i][1] == gtp_array[gtp_i+1][1]:
+							ct_pair[oppo_type] = gtp_array[gtp_i+1][3]
+						else:
+							ct_pair[oppo_type] = "0"
 
 				parsed_results.append(items + ct_pair)
 
