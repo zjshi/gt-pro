@@ -252,7 +252,11 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 						has_wildcard = true;
 					}
 
-					seq_buf[cur_pos++] = c;
+					if (cur_pos < rl) {
+						seq_buf[cur_pos++] = c;
+					} else {
+						irregular_read == true;
+					}
 				}   
 			}
 		}
