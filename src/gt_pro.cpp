@@ -132,7 +132,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 
 	int cur_pos = 0;
 
-	int rl = 300;
+	int rl = 500;
 	char seq_buf[rl];
 	char lmer_buf[l+1];
 	char mmer_buf[m+1];
@@ -169,7 +169,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 				++n_pause;
 
 				if (l_label == 3) {
-					if (cur_pos > 300 || cur_pos < 50) {
+					if (cur_pos > 500 || cur_pos < 50) {
 						irregular_read = true;	
 					}
 
