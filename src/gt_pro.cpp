@@ -157,7 +157,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 			break;
 
 		if (bytes_read == (ssize_t) -1) {
-			cerr << "unknown fetal error, when read stdin input" << endl;
+			cerr << chrono_time() << ":  " << "unknown fatal error, when read stdin input" << endl;
 			exit(EXIT_FAILURE);
 		}
 
@@ -206,7 +206,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 							while (start < end) {
 								uint64_t mid = start + (end - start) / 2;
 
-								// cerr << start << '\t' << end << '\t' << mid << '\n';
+								// cerr << chrono_time() << ":  " << start << '\t' << end << '\t' << mid << '\n';
 								if (mmers[mid] == mcode) {
 									if (footprint.find(snps[mid]) != footprint.end()) {
 										//do nothing
@@ -243,7 +243,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 
 					footprint.clear();
 					l_label = cur_pos = 0;
-				} else {        
+				} else {	
 					++l_label;
 				}
 			} else {
@@ -263,19 +263,19 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 
 		//fh.write(&kmers[0], kmers.size());
 		if (n_pause > 5*1000*1000) {
-			cerr << n_lines << " lines were scanned after "<< (chrono_time() - s_start) / 1000 << " seconds" << endl;
+			cerr << chrono_time() << ":  " << n_lines << " lines were scanned after "<< (chrono_time() - s_start) / 1000 << " seconds from file " << in_path << endl;
 			n_pause = 0;
 		}
 	}
 
 	// close(fd);
 
-	cerr << "[Done] searching is completed" << endl;
+	cerr << chrono_time() << ":  " << "[Done] searching is completed, emitting results for " << in_path << endl;
 	// auto fh = fstream(out_path, ios::out | ios::binary);
 	ofstream fh(out_path, ofstream::out | ofstream::binary);
 
 	if (kmer_matches.size() == 0) {
-		cerr << "zero hits" << endl;	
+		cerr << chrono_time() << ":  " << "zero hits" << endl;	
 	} else {
 		sort(kmer_matches.begin(), kmer_matches.end());
 
@@ -294,6 +294,7 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 			// fh << *it << "\t" << *(it+1) << "\n";
 		}
 	}
+	cerr << chrono_time() << ":  " << "Completed output for " << in_path << endl;
 
 	fh.close();
 }
@@ -386,7 +387,7 @@ int main(int argc, char** argv) {
 	} else {
 	seq_decode<uint32_t>(t_lmer_buf, l+1, mmappedData[i], b_mask);
 	is_lmer = false;
-	cerr << t_lmer_buf << t_mmer_buf << '\n';
+	cerr << chrono_time() << ":  " << t_lmer_buf << t_mmer_buf << '\n';
 	}
 	}
 
@@ -395,7 +396,7 @@ int main(int argc, char** argv) {
 
 	auto l_start = chrono_time();
 
-	cerr << "[OK] start to load: " << db_path << endl;
+	cerr << chrono_time() << ":  " << "[OK] start to load DB: " << db_path << endl;
 	for (uint64_t i = 0; i < filesize/8; i=i+2) {
 		// seq_decode<uint_fast64_t>(seq_buf, k, mmappedData[i], b_mask);
 
@@ -411,14 +412,14 @@ int main(int argc, char** argv) {
 
 		snps.push_back(mmappedData[i+1]);
 
-		// cerr << lmer << " - " << mmappedData[i] << '\n';
+		// cerr << chrono_time() << ":  " << lmer << " - " << mmappedData[i] << '\n';
 
 		if (cur_lmer != lmer) {
 			if (start == -1){
 				start = 0;
 			} else {
-				// cerr << cur_lmer << ": (" << start << " , " << end << "}\n";
-				// cerr << end - start << '\n';
+				// cerr << chrono_time() << ":  " << cur_lmer << ": (" << start << " , " << end << "}\n";
+				// cerr << chrono_time() << ":  " << end - start << '\n';
 				auto coord = make_tuple(start, end);
 				lmer_indx.insert({cur_lmer, coord});
 
@@ -431,13 +432,15 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	cerr << "[Done] " << (chrono_time() - l_start) / 1000 << " seconds elapsed" << endl;
+	cerr << chrono_time() << ":  " << "Done loading DB.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	//Cleanup
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
 	close(fd);
 	
+	l_start = chrono_time();
+
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
@@ -445,10 +448,16 @@ int main(int argc, char** argv) {
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
+
+			cerr << chrono_time() << ":  " << "Waiting on all threads from this round to finish before dispatching next round." << endl;
+
 			for (thread & ith : th_array) {
 				ith.join();
+				// cerr << chrono_time() << ":  " << " Thread joined " << endl;
 			}
 			
+			cerr << chrono_time() << ":  " << "Ready to dispatch next round of threads." << endl;
+
 			th_array.clear();
 			tmp_counter = 0;
 		} 
@@ -457,9 +466,12 @@ int main(int argc, char** argv) {
 	if (th_array.size() > 0){
 		for (thread & ith : th_array) {
 			ith.join();
+			// cerr << chrono_time() << ":  " << " Thread joined " << endl;
 		}
 		th_array.clear();
 	}
+
+	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
 	return 0;
 }
