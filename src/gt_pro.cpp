@@ -164,49 +164,84 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 		for (uint64_t i = 0;  i < bytes_read;  ++i) {
 			char c = window[i];
 
-			if (c == '\n') {
-				++n_lines;
-				++n_pause;
-
-				if (l_label == 3) {
-					if (cur_pos > 500 || cur_pos < 50) {
+			if (l_label == 3) {
+				if (c == '\n' || c == 'N') {
+					if (cur_pos < 31) {
 						irregular_read = true;	
 					}
 
-					if (has_wildcard || irregular_read) {
-						has_wildcard = false;
-						irregular_read = false;
-						l_label = cur_pos = 0;
-						footprint.clear();
-						continue;
+					if (! irregular_read) {
+						for (int j = 0;  j <= cur_pos - k;  ++j) {
+							for (int z = j;  z < j+l;  ++z) {
+								lmer_buf[z-j] = seq_buf[z];
+							}
+
+							lmer_buf[l] = '\0';
+							auto lcode = seq_encode<uint32_t>(lmer_buf, l, code_dict, b_mask);
+							if (lmer_indx.find(lcode) != lmer_indx.end()){
+								for (int z = j+l;  z < j+k;  ++z) {
+									mmer_buf[z-j-l] = seq_buf[z];
+								}		
+
+								mmer_buf[m] = '\0';
+								auto mcode = seq_encode<uint32_t>(mmer_buf, m, code_dict, b_mask);
+
+								auto coord = lmer_indx[lcode];
+								auto start = get<0>(coord);
+								auto end = get<1>(coord);
+
+								// linear search
+								for (uint64_t z = start; z < end; ++z) {
+									if (mcode == mmers[z]) {
+										if (footprint.find(snps[z]) != footprint.end()) {
+											//do nothing
+										} else {
+											kmer_matches.push_back(snps[z]);
+											footprint.insert({snps[z], 1});
+										}
+									}
+								}
+							}	
+						}   
 					}
 
-					for (int j = 0;  j <= cur_pos - k;  ++j) {
-						for (int z = j;  z < j+l;  ++z) {
-							lmer_buf[z-j] = seq_buf[z];
-						}
+					cur_pos = 0;
+					irregular_read = false;
 
-						lmer_buf[l] = '\0';
-						auto lcode = seq_encode<uint32_t>(lmer_buf, l, code_dict, b_mask);
-						if (lmer_indx.find(lcode) != lmer_indx.end()){
-							for (int z = j+l;  z < j+k;  ++z) {
-								mmer_buf[z-j-l] = seq_buf[z];
-							}		
+					if (c == '\n') {
+						++n_lines; ++n_pause;
 
-							mmer_buf[m] = '\0';
-							auto mcode = seq_encode<uint32_t>(mmer_buf, m, code_dict, b_mask);
+						footprint.clear();
+						l_label = 0;
+					}
 
-							auto coord = lmer_indx[lcode];
-							auto start = get<0>(coord);
-							auto end = get<1>(coord);
+				} else {
+					if (cur_pos < rl) {
+						seq_buf[cur_pos++] = c;
+					} else {
+						irregular_read = true;
+					}
+				}
+			} else {	
+				if (c == '\n') {
+					++n_lines; ++n_pause; ++l_label;
+				}
+			}
+		}
 
+		if (n_pause > 5*1000*1000) {
+			cerr << n_lines << " lines were scanned after "<< (chrono_time() - s_start) / 1000 << " seconds" << endl;
+			n_pause = 0;
+		}
+	}
 
+	cerr << "[Done] searching is completed" << endl;
 /* surprisingly slower
   							// binary search
 							while (start < end) {
 								uint64_t mid = start + (end - start) / 2;
 
-								// cerr << chrono_time() << ":  " << start << '\t' << end << '\t' << mid << '\n';
+								// cerr << start << '\t' << end << '\t' << mid << '\n';
 								if (mmers[mid] == mcode) {
 									if (footprint.find(snps[mid]) != footprint.end()) {
 										//do nothing
@@ -225,57 +260,12 @@ void kmer_lookup(unordered_map<uint32_t, tuple<uint64_t, uint64_t>>& lmer_indx, 
 								}
 							}
 */
-							// linear search
-							for (uint64_t z = start; z < end; ++z) {
-								if (mcode == mmers[z]) {
-									if (footprint.find(snps[z]) != footprint.end()) {
-										//do nothing
-									} else {
-										kmer_matches.push_back(snps[z]);
-										footprint.insert({snps[z], 1});
-									}
-								} else {
-									// cout << "    no match: " << mcode << " - " << mmers[j] << '\n';
-								}
-							}
-						}	
-					}   
-
-					footprint.clear();
-					l_label = cur_pos = 0;
-				} else {	
-					++l_label;
-				}
-			} else {
-				if (l_label == 3) {
-					if (c == 'N') {
-						has_wildcard = true;
-					}
-
-					if (cur_pos < rl) {
-						seq_buf[cur_pos++] = c;
-					} else {
-						irregular_read == true;
-					}
-				}   
-			}
-		}
-
-		//fh.write(&kmers[0], kmers.size());
-		if (n_pause > 5*1000*1000) {
-			cerr << chrono_time() << ":  " << n_lines << " lines were scanned after "<< (chrono_time() - s_start) / 1000 << " seconds from file " << in_path << endl;
-			n_pause = 0;
-		}
-	}
-
-	// close(fd);
-
-	cerr << chrono_time() << ":  " << "[Done] searching is completed, emitting results for " << in_path << endl;
 	// auto fh = fstream(out_path, ios::out | ios::binary);
 	ofstream fh(out_path, ofstream::out | ofstream::binary);
 
 	if (kmer_matches.size() == 0) {
 		cerr << chrono_time() << ":  " << "zero hits" << endl;	
+		fh << "normal exit and zero hits\n";
 	} else {
 		sort(kmer_matches.begin(), kmer_matches.end());
 
@@ -366,7 +356,7 @@ int main(int argc, char** argv) {
 	// char seq_buf[k+1];
 
 	uint64_t start = -1;
-	uint64_t end = 0;
+	uint64_t end = -1;
 
 	unordered_map<uint32_t, tuple<uint64_t, uint64_t>> lmer_indx;
 
@@ -423,13 +413,16 @@ int main(int argc, char** argv) {
 				auto coord = make_tuple(start, end);
 				lmer_indx.insert({cur_lmer, coord});
 
-				start = i/2;
-				end = start;	
-
+				start = end;
 			}
 
 			cur_lmer = lmer;
 		}
+	}
+
+	if (lmer_indx.find(cur_lmer) == lmer_indx.end()) {
+		auto coord = make_tuple(start, end);
+		lmer_indx.insert({cur_lmer, coord});
 	}
 
 	cerr << chrono_time() << ":  " << "Done loading DB.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
