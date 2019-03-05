@@ -403,8 +403,8 @@ int main(int argc, char** argv) {
 	cerr << chrono_time() << ":  " << "[OK] Zeroing index." << endl;
 
 	// unordered_map<uint32_t, tuple<uint64_t, uint64_t>> lmer_indx;
-	constexpr uint64_t k_4_BILLION = ((uint64_t) 1) << (uint64_t) 32;
-	tuple<uint64_t, uint64_t> *lmer_indx = new tuple<uint64_t, uint64_t>[k_4_BILLION]();
+	constexpr uint64_t k_1_BILLION = ((uint64_t) 1) << (uint64_t) 30;
+	tuple<uint64_t, uint64_t> *lmer_indx = new tuple<uint64_t, uint64_t>[k_1_BILLION]();
 
 	cerr << chrono_time() << ":  " << "[OK] start to load DB: " << db_path << endl;
 
@@ -413,7 +413,7 @@ int main(int argc, char** argv) {
 
 		auto kmer_int = mmappedData[i];
 
-		uint32_t lmer_int = (uint32_t)((kmer_int & 0xFFFFFFFF00000000LL) >> 32);
+		uint32_t lmer_int = (uint32_t)((kmer_int & 0x3FFFFFFF00000000LL) >> 32);
 		uint32_t mmer_int = (uint32_t)(kmer_int & 0xFFFFFFFFLL);
 
 		mmers.push_back(mmer_int);
