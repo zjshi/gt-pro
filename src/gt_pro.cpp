@@ -129,9 +129,9 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5*1000*1000;
 
 
-    // Reads that contain wildcard characters ('N' or 'n') are split into
-    // tokens at those wildcard characters.  Each token is processed as
-    // though it were a separate read.
+	// Reads that contain wildcard characters ('N' or 'n') are split into
+	// tokens at those wildcard characters.  Each token is processed as
+	// though it were a separate read.
 	constexpr int MAX_TOKEN_LENGTH = 500;
 	constexpr int MIN_TOKEN_LENGTH = 31;
 
@@ -188,7 +188,7 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 				// The current line does *not* contain a read sequence.
 				// Next character, please.
 				continue;
-            }
+			}
 
 			// The current line contains a read sequence.  Split it into tokens at wildcard 'N'
 			// characters.  Buffer current token in seq_buf[0...MAX_READ_LENGTH-1].
@@ -259,9 +259,9 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 	}
 
 	if (token_length != 0) {
-    	cerr << chrono_time() << ":  " << "Error:  Truncated read sequence at end of file: " << in_path << endl;
+		cerr << chrono_time() << ":  " << "Error:  Truncated read sequence at end of file: " << in_path << endl;
 		exit(EXIT_FAILURE);
-    }
+	}
 
 	cerr << chrono_time() << ":  " << "[Done] searching is completed, emitting results for " << in_path << endl;
 	ofstream fh(out_path, ofstream::out | ofstream::binary);
