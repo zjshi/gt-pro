@@ -104,9 +104,9 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-using LmerOffsets = tuple<uint64_t, uint64_t>;
+using LmerRange = tuple<uint64_t, uint64_t>;
 
-void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
+void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
 	uint32_t lsb = 1;
 	uint32_t b_mask = (lsb << bpb) - lsb;
 
@@ -133,7 +133,7 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
     // tokens at those wildcard characters.  Each token is processed as
     // though it were a separate read.
 	constexpr int MAX_TOKEN_LENGTH = 500;
-	constexpr int MIN_TOKEN_LENGTH = 50;  // FIXME: 31;
+	constexpr int MIN_TOKEN_LENGTH = 31;
 
 	char seq_buf[MAX_TOKEN_LENGTH];
 	char lmer_buf[L + 1];
@@ -142,8 +142,8 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
 	lmer_buf[L] = '\0';
 	mmer_buf[L] = '\0';
 
-	// range 0 ... max read length
-	int cur_pos = 0;
+	// This ranges from 0 to the length of the longest read (could exceed MAX_TOKEN_LENGTH).
+	int token_length = 0;
 
 	vector<uint64_t> kmer_matches;
 
@@ -153,8 +153,6 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
 
 	auto s_start = chrono_time();
 	char c = '\0';
-
-	bool has_wildcard=false;
 
 	while (true) {
 		const ssize_t bytes_read = read(fd, window, step_size);
@@ -194,26 +192,23 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
 
 			// The current line contains a read sequence.  Split it into tokens at wildcard 'N'
 			// characters.  Buffer current token in seq_buf[0...MAX_READ_LENGTH-1].
-			const bool at_token_end = (c == '\n');  // FIXME:  || (c == 'N') || (c == 'n');
+			const bool at_token_end = (c == '\n') || (c == 'N') || (c == 'n');
 			if (!(at_token_end)) {
-				// Invariant:  The current token length is cur_pos.
+				// Invariant:  The current token length is token_length.
 				// Only the first MAX_TOKEN_LENGTH charaters of the token are retained.
-				if (cur_pos < MAX_TOKEN_LENGTH) {
-					seq_buf[cur_pos] = c;
+				if (token_length < MAX_TOKEN_LENGTH) {
+					seq_buf[token_length] = c;
 				}
-				if (c == 'N') {
-					has_wildcard = true;  // FIXME
-				}
-				++cur_pos;
+				++token_length;
 				// next character, please
 				continue;
 			}
 
 			// is token length within acceptable bounds?   if not, token will be dropped silently
-			if (MIN_TOKEN_LENGTH <= cur_pos && cur_pos <= MAX_TOKEN_LENGTH && !has_wildcard) {
+			if (MIN_TOKEN_LENGTH <= token_length && token_length <= MAX_TOKEN_LENGTH) {
 
 				// yes, process token
-				for (int j = 0;  j <= cur_pos - K;  ++j) {
+				for (int j = 0;  j <= token_length - K;  ++j) {
 
 					// lmer_buf[0:L] := seq_buf[j:j+L]
 					for (int z = j;  z < j + L;  ++z) {
@@ -223,9 +218,12 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
 					// ensured by prior initialization
 					assert(lmer_buf[L] == '\0');
 
-					auto lcode = seq_encode<uint32_t>(lmer_buf, L, code_dict, b_mask);
+					const auto lcode = seq_encode<uint32_t>(lmer_buf, L, code_dict, b_mask);
+					const auto range = lmer_indx[lcode];
+					const auto start = get<0>(range);
+					const auto end = get<1>(range);
 
-					if (get<1>(lmer_indx[lcode])) {
+					if (end) {
 
 						// mmer_buf[0:K-L] := seq_buf[j+L:j+K]
 						for (int z = j + L;  z < j + K;  ++z) {
@@ -236,10 +234,6 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
 						assert(mmer_buf[M] == '\0');
 
 						auto mcode = seq_encode<uint32_t>(mmer_buf, M, code_dict, b_mask);
-
-						auto coord = lmer_indx[lcode];
-						auto start = get<0>(coord);
-						auto end = get<1>(coord);
 
 						// linear search
 						for (uint64_t z = start; z < end; ++z) {
@@ -260,12 +254,11 @@ void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_
 
 			// next token, please
 			footprint.clear();
-			cur_pos = 0;
-			has_wildcard = false;  // FIXME
+			token_length = 0;
 		}
 	}
 
-	if (cur_pos != 0) {
+	if (token_length != 0) {
     	cerr << chrono_time() << ":  " << "Error:  Truncated read sequence at end of file: " << in_path << endl;
 		exit(EXIT_FAILURE);
     }
@@ -357,12 +350,12 @@ int main(int argc, char** argv) {
 	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
 
-	uint64_t start = -1;
-	uint64_t end = 0;  // FIXME: -1;
+	uint64_t start = 0;
+	uint64_t end = 0;
 
 	vector<uint32_t> mmers;
 	vector<uint64_t> snps;
-	uint32_t cur_lmer = 2147483648;  // 1u << 31u
+	uint32_t last_lmer = 2147483648;  // 1u << 31u, this value doesn't matter
 
 	mmers.reserve(filesize / 8);
 	snps.reserve(filesize / 8);
@@ -371,31 +364,25 @@ int main(int argc, char** argv) {
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
 	constexpr uint64_t BILLION = ((uint64_t) 1) << (uint64_t) 30;  // 2 ** 30
-	LmerOffsets *lmer_indx = new LmerOffsets[BILLION]();
+	LmerRange *lmer_indx = new LmerRange[BILLION]();
 
 	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 	l_start = chrono_time();
 
 	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
-		auto kmer_int = mmappedData[i];
-		uint32_t lmer_int = (uint32_t)((kmer_int & 0x3FFFFFFF00000000LL) >> 32);
-		uint32_t mmer_int = (uint32_t)(kmer_int & 0xFFFFFFFFLL);
-		mmers.push_back(mmer_int);
-		++end;
+		auto kmer = mmappedData[i];
+		uint32_t lmer = (uint32_t)((kmer & 0x3FFFFFFF00000000LL) >> 32);
+		uint32_t mmer = (uint32_t)(kmer & 0xFFFFFFFFLL);
+		mmers.push_back(mmer);
+		++end; 
 		snps.push_back(mmappedData[i+1]);
-		if (cur_lmer != lmer_int) {
-			if (start == -1){
-				start = 0;
-			} else {
-				lmer_indx[cur_lmer] = make_tuple(start, end);
-				start = i/2;
-				end = start;
-			}
-			cur_lmer = lmer_int;
+		if (i > 0 && lmer != last_lmer) {
+			start = end - 1;
 		}
+		// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
+		lmer_indx[lmer] = make_tuple(start, end);
+		last_lmer = lmer;
 	}
-
-    // FIXME:  ^^^ Did we just completely drop the last lmer_int?
 
 	cerr << chrono_time() << ":  " << "Done loading DB.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 	l_start = chrono_time();
