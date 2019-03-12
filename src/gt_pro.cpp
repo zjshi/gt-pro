@@ -104,7 +104,9 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
+using LmerOffsets = tuple<uint64_t, uint64_t>;
+
+void kmer_lookup(LmerOffsets* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
 	uint32_t lsb = 1;
 	uint32_t b_mask = (lsb << bpb) - lsb;
 
@@ -121,24 +123,27 @@ void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, 
 	vector<char> buffer(buffer_size);
 	char* window = buffer.data();
 
-	uintmax_t n_lines = 0;
-	uintmax_t n_pause = 0;
+	uint64_t n_lines = 0;
+	
+	// Print progress update every 5 million lines.
+	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5*1000*1000;
 
-	int cur_pos = 0;
 
-	constexpr int MAX_READ_LENGTH = 500;
-	constexpr int MIN_READ_LENGTH = 50;
+    // Reads that contain wildcard characters ('N' or 'n') are split into
+    // tokens at those wildcard characters.  Each token is processed as
+    // though it were a separate read.
+	constexpr int MAX_TOKEN_LENGTH = 500;
+	constexpr int MIN_TOKEN_LENGTH = 50;  // FIXME: 31;
 
-	char seq_buf[MAX_READ_LENGTH];
+	char seq_buf[MAX_TOKEN_LENGTH];
 	char lmer_buf[L + 1];
 	char mmer_buf[M + 1];
 
 	lmer_buf[L] = '\0';
 	mmer_buf[L] = '\0';
 
-	int l_label = 2;
-	bool has_wildcard = false;
-	bool irregular_read = false;
+	// range 0 ... max read length
+	int cur_pos = 0;
 
 	vector<uint64_t> kmer_matches;
 
@@ -147,6 +152,10 @@ void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, 
 	int fd = open(in_path, O_RDONLY);
 
 	auto s_start = chrono_time();
+	char c = '\0';
+
+	bool has_wildcard=false;
+
 	while (true) {
 		const ssize_t bytes_read = read(fd, window, step_size);
 
@@ -159,58 +168,51 @@ void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, 
 		}
 
 		for (uint64_t i = 0;  i < bytes_read;  ++i) {
-			const char c = window[i];
 
-			// In the FASTQ format, every 4 lines define a read.  The first line is the
-			// read header.  The next line is the read sequence.  We only care about
-			// the read sequences.  We track this by incrementing l_label modulo 4 on
-            // each line, then ignore lines for which l_label != 3.  We could just
-            // as easily use the equivalent condition (n_lines % 4 != 1).
-			assert(l_label == (n_lines + 2) % 4);
-
-            if (c != '\n') {
-				// does the current line contain a read sequence?
-				if (l_label == 3) {
-					// yes, buffer the read's characters into seq_buf[0...MAX_READ_LENGTH-1]
-					if (c == 'N') {
-						has_wildcard = true;
-					}
-					if (cur_pos < MAX_READ_LENGTH) {
-						seq_buf[cur_pos++] = c;
-					} else {
-						irregular_read == true;
-					}
+			if (c == '\n') {
+				++n_lines;
+				if ((n_lines + 1) % PROGRESS_UPDATE_INTERVAL == 0) {
+					cerr << chrono_time() << ":  " << ((n_lines + 3) / 4) << " reads were scanned after "
+						 << (chrono_time() - s_start) / 1000 << " seconds from file "
+						 << in_path << endl;
 				}
+			}
+
+			// Invariant:  The number of new line characters consumed before window[i]
+			// is the value of n_lines.
+
+			c = window[i];
+
+			// In FASTQ format, every 4 lines define a read.  The first line is the
+			// read header.  The next line is the read sequence.  We only care about
+			// the read sequence, where n_lines % 4 == 1.
+			if (n_lines % 4 != 1) {
+				// The current line does *not* contain a read sequence.
+				// Next character, please.
+				continue;
+            }
+
+			// The current line contains a read sequence.  Split it into tokens at wildcard 'N'
+			// characters.  Buffer current token in seq_buf[0...MAX_READ_LENGTH-1].
+			const bool at_token_end = (c == '\n');  // FIXME:  || (c == 'N') || (c == 'n');
+			if (!(at_token_end)) {
+				// Invariant:  The current token length is cur_pos.
+				// Only the first MAX_TOKEN_LENGTH charaters of the token are retained.
+				if (cur_pos < MAX_TOKEN_LENGTH) {
+					seq_buf[cur_pos] = c;
+				}
+				if (c == 'N') {
+					has_wildcard = true;  // FIXME
+				}
+				++cur_pos;
 				// next character, please
 				continue;
 			}
 
-			assert(c == '\n');
+			// is token length within acceptable bounds?   if not, token will be dropped silently
+			if (MIN_TOKEN_LENGTH <= cur_pos && cur_pos <= MAX_TOKEN_LENGTH && !has_wildcard) {
 
-			++n_lines;
-			++n_pause;
-
-			if (n_pause == 5*1000*1000) {
-				cerr << chrono_time() << ":  " << n_lines << " lines were scanned after "<< (chrono_time() - s_start) / 1000 << " seconds from file " << in_path << endl;
-				n_pause = 0;
-			}
-
-			if (l_label == 3) {
-
-				assert(cur_pos <= MAX_READ_LENGTH);
-
-				if (cur_pos < MIN_READ_LENGTH) {
-					irregular_read = true;	
-				}
-
-				if (has_wildcard || irregular_read) {
-					has_wildcard = false;
-					irregular_read = false;
-					l_label = cur_pos = 0;
-					footprint.clear();
-					continue;
-				}
-
+				// yes, process token
 				for (int j = 0;  j <= cur_pos - K;  ++j) {
 
 					// lmer_buf[0:L] := seq_buf[j:j+L]
@@ -222,6 +224,7 @@ void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, 
 					assert(lmer_buf[L] == '\0');
 
 					auto lcode = seq_encode<uint32_t>(lmer_buf, L, code_dict, b_mask);
+
 					if (get<1>(lmer_indx[lcode])) {
 
 						// mmer_buf[0:K-L] := seq_buf[j+L:j+K]
@@ -238,32 +241,6 @@ void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, 
 						auto start = get<0>(coord);
 						auto end = get<1>(coord);
 
-
-						/* surprisingly slower
-						// binary search
-						while (start < end) {
-							uint64_t mid = start + (end - start) / 2;
-
-							// cerr << chrono_time() << ":  " << start << '\t' << end << '\t' << mid << '\n';
-							if (mmers[mid] == mcode) {
-								if (footprint.find(snps[mid]) != footprint.end()) {
-									//do nothing
-								} else {
-									kmer_matches.push_back(snps[mid]);
-									footprint.insert({snps[mid], 1});
-								}
-
-								break;
-							}
-
-							if (mmers[mid] < mcode){
-								start = mid + 1;
-							} else {
-								end = mid;
-							}
-						}
-						*/
-
 						// linear search
 						for (uint64_t z = start; z < end; ++z) {
 							if (mcode == mmers[z]) {
@@ -279,12 +256,12 @@ void kmer_lookup(tuple<uint64_t, uint64_t>* lmer_indx, vector<uint32_t>& mmers, 
 						}
 					}
 				}
-
-				footprint.clear();
-				l_label = cur_pos = 0;
-			} else {
-				++l_label;
 			}
+
+			// next token, please
+			footprint.clear();
+			cur_pos = 0;
+			has_wildcard = false;  // FIXME
 		}
 	}
 
@@ -377,78 +354,50 @@ int main(int argc, char** argv) {
 	//Open file
 	int fd = open(db_path, O_RDONLY, 0);
 	assert(fd != -1);
-	//Execute mmap
-	//uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
 	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
-	//Write the mmapped data to stdout (= FD #1)
-
-	// write(1, mmappedData, filesize);
-
-	// char seq_buf[k+1];
 
 	uint64_t start = -1;
-	uint64_t end = 0;  // FIXME: this init breaks the loop invariant;  should be -1
+	uint64_t end = 0;  // FIXME: -1;
 
 	vector<uint32_t> mmers;
 	vector<uint64_t> snps;
 	uint32_t cur_lmer = 2147483648;  // 1u << 31u
 
-	auto l_start = chrono_time();
-
-	cerr << chrono_time() << ":  " << "[OK] Reserving memory." << endl;
 	mmers.reserve(filesize / 8);
 	snps.reserve(filesize / 8);
 
-	cerr << chrono_time() << ":  " << "[OK] Zeroing index." << endl;
+	auto l_start = chrono_time();
+	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
-	// unordered_map<uint32_t, tuple<uint64_t, uint64_t>> lmer_indx;
-	constexpr uint64_t k_1_BILLION = ((uint64_t) 1) << (uint64_t) 30;
-	tuple<uint64_t, uint64_t> *lmer_indx = new tuple<uint64_t, uint64_t>[k_1_BILLION]();
+	constexpr uint64_t BILLION = ((uint64_t) 1) << (uint64_t) 30;  // 2 ** 30
+	LmerOffsets *lmer_indx = new LmerOffsets[BILLION]();
 
-	cerr << chrono_time() << ":  " << "[OK] start to load DB: " << db_path << endl;
+	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
+	l_start = chrono_time();
 
 	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
-		// seq_decode<uint_fast64_t>(seq_buf, k, mmappedData[i], b_mask);
-
 		auto kmer_int = mmappedData[i];
-
 		uint32_t lmer_int = (uint32_t)((kmer_int & 0x3FFFFFFF00000000LL) >> 32);
 		uint32_t mmer_int = (uint32_t)(kmer_int & 0xFFFFFFFFLL);
-
 		mmers.push_back(mmer_int);
 		++end;
-
 		snps.push_back(mmappedData[i+1]);
-
-		// cerr << chrono_time() << ":  " << lmer << " - " << mmappedData[i] << '\n';
-
 		if (cur_lmer != lmer_int) {
 			if (start == -1){
 				start = 0;
 			} else {
-				// cerr << chrono_time() << ":  " << cur_lmer << ": (" << start << " , " << end << "}\n";
-				// cerr << chrono_time() << ":  " << end - start << '\n';
-				// mmer/snps entries at position start, start+1, ..., end-1 belong to cur_lmer
-				// mmer/snps entry at position end belongs to the next lmer_int
-			    auto coord = make_tuple(start, end);
-				lmer_indx[cur_lmer] = coord;
-
-				// start, end := mmers.size() - 1, snps.size() - 1
-				// now they point to the last element of mmers and snps
-				// so the complicated assignents below should really just be "start = end"
-				// assert(end == i / 2);
+				lmer_indx[cur_lmer] = make_tuple(start, end);
 				start = i/2;
 				end = start;
 			}
-
 			cur_lmer = lmer_int;
 		}
 	}
 
-    // ^^^ Did we just completely drop the last lmer_int?
+    // FIXME:  ^^^ Did we just completely drop the last lmer_int?
 
-	cerr << chrono_time() << ":  " << "Done loading DB.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
+	cerr << chrono_time() << ":  " << "Done loading DB.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 	l_start = chrono_time();
 
 	int rc = munmap(mmappedData, filesize);
