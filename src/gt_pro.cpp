@@ -236,7 +236,8 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 						auto mcode = seq_encode<uint32_t>(mmer_buf, M, code_dict, b_mask);
 
 						// linear search
-
+						for (uint64_t z = start; z < end; ++z) {
+							if (mcode == mmers[z]) {
 								if (footprint.find(snps[z]) != footprint.end()) {
 									//do nothing
 								} else {
