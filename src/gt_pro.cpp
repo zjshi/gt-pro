@@ -37,6 +37,8 @@ constexpr auto buffer_size = 256 * 1024 * 1024;
 
 // bits per base
 constexpr int bpb = 2;
+constexpr uint32_t lsb = 1;
+constexpr uint32_t b_mask = (lsb << bpb) - lsb;
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
@@ -79,9 +81,10 @@ void make_code_dict(int_type* code_dict) {
 	code_dict['t'] = bit_encode<int_type>('t');
 }
 
-template <class int_type>
-int_type seq_encode(const char* buf, int len, const int_type* code_dict, const int_type b_mask) {
+template <class int_type, int len>
+int_type seq_encode(const char* buf, int start, const int_type* code_dict) {
 	int_type seq_code = 0;
+	buf += start;
 	for (int i=0;  i < len;  ++i) {
 		const int_type b_code = code_dict[buf[i]];
 		seq_code |= ((b_code & b_mask) << (bpb * (len - i - 1)));
@@ -90,7 +93,7 @@ int_type seq_encode(const char* buf, int len, const int_type* code_dict, const i
 }
 
 template <class int_type>
-void seq_decode(char* buf, const int len, const int_type seq_code, const int_type b_mask) {
+void seq_decode(char* buf, const int len, const int_type seq_code) {
 	for (int i=0;  i < len-1;  ++i) {
 		const int_type b_code = (seq_code >> (bpb * (len - i - 2))) & b_mask;
 		buf[i] = bit_decode<int_type>(b_code);
@@ -107,9 +110,6 @@ long chrono_time() {
 using LmerRange = tuple<uint64_t, uint64_t>;
 
 void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
-	uint32_t lsb = 1;
-	uint32_t b_mask = (lsb << bpb) - lsb;
-
 	uint32_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict<uint32_t>(code_dict);
 
@@ -136,11 +136,6 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 	constexpr int MIN_TOKEN_LENGTH = 31;
 
 	char seq_buf[MAX_TOKEN_LENGTH];
-	char lmer_buf[L + 1];
-	char mmer_buf[M + 1];
-
-	lmer_buf[L] = '\0';
-	mmer_buf[L] = '\0';
 
 	// This ranges from 0 to the length of the longest read (could exceed MAX_TOKEN_LENGTH).
 	int token_length = 0;
@@ -210,31 +205,14 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					// lmer_buf[0:L] := seq_buf[j:j+L]
-					for (int z = j;  z < j + L;  ++z) {
-						lmer_buf[z - j] = seq_buf[z];
-					}
-
-					// ensured by prior initialization
-					assert(lmer_buf[L] == '\0');
-
-					const auto lcode = seq_encode<uint32_t>(lmer_buf, L, code_dict, b_mask);
+					const auto lcode = seq_encode<uint32_t, L>(seq_buf, j, code_dict);
 					const auto range = lmer_indx[lcode];
 					const auto start = get<0>(range);
 					const auto end = get<1>(range);
 
 					if (end) {
 
-						// mmer_buf[0:K-L] := seq_buf[j+L:j+K]
-						for (int z = j + L;  z < j + K;  ++z) {
-							mmer_buf[z - j -L] = seq_buf[z];
-						}
-
-						// ensured by prior initialization
-						assert(mmer_buf[M] == '\0');
-
-						auto mcode = seq_encode<uint32_t>(mmer_buf, M, code_dict, b_mask);
-
+						const auto mcode = seq_encode<uint32_t, M>(seq_buf, j + L, code_dict);
 						// linear search
 						for (uint64_t z = start; z < end; ++z) {
 							if (mcode == mmers[z]) {
