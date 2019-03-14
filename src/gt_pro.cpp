@@ -358,6 +358,8 @@ int main(int argc, char** argv) {
 	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 	l_start = chrono_time();
 
+	uint64_t lmer_count = filesize ? 1 : 0;
+	
 	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
 		auto kmer = mmappedData[i];
 		uint32_t lmer = (uint32_t)((kmer & 0x3FFFFFFF00000000LL) >> 32);
@@ -368,13 +370,14 @@ int main(int argc, char** argv) {
 		snps.push_back(mmappedData[i+1]);
 		if (i > 0 && lmer != last_lmer) {
 			start = end - 1;
+			++lmer_count;
 		}
 		// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
 		lmer_indx[lmer] = make_tuple(start, end - start);
 		last_lmer = lmer;
 	}
 
-	cerr << chrono_time() << ":  " << "Done loading DB of " << mmers.size() << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+	cerr << chrono_time() << ":  " << "Done loading DB of " << mmers.size() << " mmers and " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
