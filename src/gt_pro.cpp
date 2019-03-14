@@ -40,6 +40,11 @@ constexpr int bpb = 2;
 constexpr uint32_t lsb = 1;
 constexpr uint32_t b_mask = (lsb << bpb) - lsb;
 
+constexpr int L = 15;
+constexpr int K = 31;
+constexpr int M = K - L;
+constexpr uint64_t BILLION = ((uint64_t) 1) << (uint64_t) 30;  // 2 ** 30
+
 size_t get_fsize(const char* filename) {
 	struct stat st;
 	stat(filename, &st);
@@ -107,17 +112,13 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-using LmerRange = tuple<uint64_t, uint64_t>;
+using LmerRange = tuple<uint32_t, uint8_t>;
 
-void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint32_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
 	uint32_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict<uint32_t>(code_dict);
 
 	auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
-
-	constexpr int L = 15;
-	constexpr int K = 31;
-	constexpr int M = K - L;
 
 	//Matching: lmer table lookup then linear search 
 	vector<char> buffer(buffer_size);
@@ -206,24 +207,30 @@ void kmer_lookup(LmerRange* lmer_indx, vector<uint32_t>& mmers, vector<uint64_t>
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
 					const auto lcode = seq_encode<uint32_t, L>(seq_buf, j, code_dict);
-					const auto range = lmer_indx[lcode];
-					const auto start = get<0>(range);
-					const auto end = get<1>(range);
+					const auto mcode = seq_encode<uint32_t, M>(seq_buf, j + L, code_dict);
 
-					if (end) {
+					const auto mpres = mmer_present[mcode / 64];
 
-						const auto mcode = seq_encode<uint32_t, M>(seq_buf, j + L, code_dict);
-						// linear search
-						for (uint64_t z = start; z < end; ++z) {
-							if (mcode == mmers[z]) {
-								if (footprint.find(snps[z]) != footprint.end()) {
-									//do nothing
+					if ((mpres >> (mcode % 64)) & 1) {
+
+						const auto range = lmer_indx[lcode];
+						const auto start = get<0>(range);
+						const auto len = get<1>(range);
+
+						if (len) {
+
+							// linear search
+							for (uint64_t z = start;  z < start + len;  ++z) {
+								if (mcode == mmers[z]) {
+									if (footprint.find(snps[z]) != footprint.end()) {
+										//do nothing
+									} else {
+										kmer_matches.push_back(snps[z]);
+										footprint.insert({snps[z], 1});
+									}
 								} else {
-									kmer_matches.push_back(snps[z]);
-									footprint.insert({snps[z], 1});
+									// cout << "    no match: " << mcode << " - " << mmers[j] << '\n';
 								}
-							} else {
-								// cout << "    no match: " << mcode << " - " << mmers[j] << '\n';
 							}
 						}
 					}
@@ -345,8 +352,8 @@ int main(int argc, char** argv) {
 	auto l_start = chrono_time();
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
-	constexpr uint64_t BILLION = ((uint64_t) 1) << (uint64_t) 30;  // 2 ** 30
 	LmerRange *lmer_indx = new LmerRange[BILLION]();
+	uint64_t *mmer_present = new uint64_t[BILLION / 16]();
 
 	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 	l_start = chrono_time();
@@ -356,28 +363,29 @@ int main(int argc, char** argv) {
 		uint32_t lmer = (uint32_t)((kmer & 0x3FFFFFFF00000000LL) >> 32);
 		uint32_t mmer = (uint32_t)(kmer & 0xFFFFFFFFLL);
 		mmers.push_back(mmer);
+		mmer_present[mmer / 64] |= ((uint64_t) 1) << (mmer % 64);
 		++end; 
 		snps.push_back(mmappedData[i+1]);
 		if (i > 0 && lmer != last_lmer) {
 			start = end - 1;
 		}
 		// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
-		lmer_indx[lmer] = make_tuple(start, end);
+		lmer_indx[lmer] = make_tuple(start, end - start);
 		last_lmer = lmer;
 	}
 
-	cerr << chrono_time() << ":  " << "Done loading DB.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
-	l_start = chrono_time();
+	cerr << chrono_time() << ":  " << "Done loading DB of " << mmers.size() << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
 	close(fd);
 	
+	l_start = chrono_time();
 
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, ref(mmers), ref(snps), optind - in_pos, argv[optind], oname));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, ref(mmers), ref(snps), optind - in_pos, argv[optind], oname));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
