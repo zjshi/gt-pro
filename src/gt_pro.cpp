@@ -30,6 +30,7 @@
 #include <sstream>
 #include <fstream>
 #include <thread>
+#include <limits>
 
 using namespace std;
 
@@ -42,15 +43,34 @@ constexpr auto buffer_size = 256 * 1024 * 1024;
 // of L below is optimal for our dataset => no binary search.
 constexpr bool USE_BINARY_SEARCH = false;
 
-// bits per base
-constexpr int bpb = 2;
-constexpr uint32_t lsb = 1;
-constexpr uint32_t b_mask = (lsb << bpb) - lsb;
+// See bit_encode
+constexpr uint8_t BITS_PER_BASE = 2;
 
 constexpr int L = 14;
 constexpr int K = 31;
 constexpr int M = K - L;
-constexpr uint64_t BILLION = ((uint64_t) 1) << (uint64_t) 30;  // 2 ** 30
+
+static_assert(L > 0);
+static_assert(M > 0);
+
+constexpr uint64_t LMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * L)) - 1;
+constexpr uint64_t MMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * M)) - 1;
+
+// Given L and M above, choose appropriately-sized integer types
+// to represent lmers and mmers.
+using LmerType = uint32_t;
+using MmerType = uint64_t;
+
+static_assert(LMER_MASK <= numeric_limits<LmerType>::max());
+static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
+
+// Choose appropriately sized integer types to represent offsets into
+// the array of all mmers.
+using StartType = uint32_t;
+using EndMinusStartType = uint16_t;
+using LmerRange = tuple<StartType, EndMinusStartType>;
+constexpr auto MAX_START = numeric_limits<StartType>::max();
+constexpr auto MAX_END_MINUS_START = numeric_limits<EndMinusStartType>::max();
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
@@ -65,12 +85,10 @@ uint8_t bit_encode(const char c) {
 		case 'G': case 'g': return 2;
 		case 'T': case 't': return 3;
 	}
-
 	assert(false);
 }
 
-template <class int_type>
-char bit_decode(const int_type bit_code) {
+char bit_decode(const uint8_t bit_code) {
 	switch (bit_code) {
 		case 0: return 'A';
 		case 1: return 'C';
@@ -92,24 +110,24 @@ void make_code_dict(uint8_t* code_dict) {
 }
 
 template <class int_type, int len>
-int_type seq_encode(const char* buf, int start, const uint8_t* code_dict) {
+int_type seq_encode(const char* buf, const uint8_t* code_dict) {
 	int_type seq_code = 0;
-	buf += start;
-	for (int i=0;  i < len;  ++i) {
-		const int_type b_code = code_dict[buf[i]] & b_mask;
-		seq_code |= (b_code << (bpb * (len - i - 1)));
+	// This loop may be unrolled by the compiler because len is a compile-time constant.
+	for (int bitpos = (len - 1) * BITS_PER_BASE;  bitpos >= 0;  bitpos -= BITS_PER_BASE) {
+		const int_type b_code = code_dict[*buf++];
+		seq_code |= (b_code << bitpos);
 	}
 	return seq_code;
 }
 
 template <class int_type>
 void seq_decode(char* buf, const int len, const int_type seq_code) {
-	for (int i=0;  i < len-1;  ++i) {
-		const int_type b_code = (seq_code >> (bpb * (len - i - 2))) & b_mask;
-		buf[i] = bit_decode<int_type>(b_code);
+	constexpr uint8_t B_MASK = (1 << BITS_PER_BASE) - 1;
+	for (int i=0;  i < len - 1;  ++i) {
+		const uint8_t b_code = B_MASK & (seq_code >> (BITS_PER_BASE * (len - i - 2)));
+		buf[i] = bit_decode(b_code);
 	}
-
-	buf[len-1] = '\0';
+	buf[len - 1] = '\0';
 }
 
 long chrono_time() {
@@ -117,9 +135,7 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-using LmerRange = tuple<uint32_t, uint16_t>;
-
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint64_t>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<MmerType>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
 
@@ -133,7 +149,6 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint64_t>&
 	
 	// Print progress update every 5 million lines.
 	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5*1000*1000;
-
 
 	// Reads that contain wildcard characters ('N' or 'n') are split into
 	// tokens at those wildcard characters.  Each token is processed as
@@ -211,8 +226,8 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint64_t>&
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const auto lcode = seq_encode<uint32_t, L>(seq_buf, j, code_dict);
-					const auto mcode = seq_encode<uint64_t, M>(seq_buf, j + L, code_dict);
+					const auto lcode = seq_encode<LmerType, L>(seq_buf + j, code_dict);
+					const auto mcode = seq_encode<MmerType, M>(seq_buf + j + L, code_dict);
 
 					const auto mpres = mmer_present[mcode / 64];
 					if ((mpres >> (mcode % 64)) & 1) {
@@ -220,10 +235,10 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint64_t>&
 						const auto range = lmer_indx[lcode];
 						auto start = get<0>(range);
 						const auto len = get<1>(range);
-						auto end = start + len;
-						const auto orig_end = end;
 
 						if (USE_BINARY_SEARCH) {
+							auto end = start + len;
+							const auto orig_end = end;
 							// Binary search invariant:
 							//     start <= end && mmers[start - 1] < mcode <= mmers[end]
 							while (start != end) {
@@ -238,9 +253,7 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint64_t>&
 							//      invariant && start == end
 							// Therefore all occurrences of mcode can be found as follows.
 							for (auto z=start;  z < orig_end && mcode == mmers[z]; ++z) {
-								if (footprint.find(snps[z]) != footprint.end()) {
-									//do nothing
-								} else {
+								if (footprint.find(snps[z]) == footprint.end()) {
 									kmer_matches.push_back(snps[z]);
 									footprint.insert({snps[z], 1});
 								}
@@ -248,19 +261,13 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<uint64_t>&
 						}
 
 						if (!(USE_BINARY_SEARCH) && len) {
-
 							// linear search
 							for (uint64_t z = start;  z < start + len;  ++z) {
 								if (mcode == mmers[z]) {
-									if (footprint.find(snps[z]) != footprint.end()) {
-										//do nothing
-									} else {
+									if (footprint.find(snps[z]) == footprint.end()) {
 										kmer_matches.push_back(snps[z]);
 										footprint.insert({snps[z], 1});
 									}
-									// break;
-								} else {
-									// cout << "    no match: " << mcode << " - " << mmers[j] << '\n';
 								}
 							}
 						}
@@ -370,35 +377,33 @@ int main(int argc, char** argv) {
 	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
 
-	uint64_t start = 0;
-	uint64_t end = 0;
-
-	vector<uint64_t> mmers;
+	vector<MmerType> mmers;
 	vector<uint64_t> snps;
-	uint32_t last_lmer = 2147483648;  // 1u << 31u, this value doesn't matter
-
-	mmers.reserve(filesize / 8);
-	snps.reserve(filesize / 8);
 
 	auto l_start = chrono_time();
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
-	LmerRange *lmer_indx = new LmerRange[BILLION / 4]();
-	uint64_t *mmer_present = new uint64_t[BILLION / 4]();
-	memset(lmer_indx, 0, ((uint64_t) sizeof(LmerRange)) * BILLION / 4);
-	memset(mmer_present, 0, ((uint64_t) sizeof(uint64_t)) * BILLION / 4);
+	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
+	uint64_t *mmer_present = new uint64_t[(1 + MMER_MASK) / 64];  // allocate 1 bit per possible mmer
+
+	memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
+	memset(mmer_present, 0, (1 + MMER_MASK) / 8);
+	mmers.reserve(filesize / 8);
+	snps.reserve(filesize / 8);
 
 	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 	l_start = chrono_time();
 
 	uint64_t lmer_count = filesize ? 1 : 0;
+	LmerType last_lmer;
+	uint64_t start = 0;
+	uint64_t end = 0;
 	
 	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
 		auto kmer = mmappedData[i];
-		uint32_t lmer = (uint32_t)((kmer >> 34) & 0xFFFFFFFUL); // 28 msbs of kmer
-		uint64_t mmer = (uint64_t)(kmer & 0x3FFFFFFFFLL); // 34 lsbs of kmer
+		MmerType mmer = MMER_MASK & kmer; // 34 lsbs of kmer, assuming M=17
+		LmerType lmer = LMER_MASK & (kmer >> (M * BITS_PER_BASE)); // 28 msbs of kmer, assuming L=14, M=17
 		mmers.push_back(mmer);
-		mmer_present[mmer / 64] |= ((uint64_t) 1) << (mmer % 64);
 		++end;
 		snps.push_back(mmappedData[i+1]);
 		if (i > 0 && lmer != last_lmer) {
@@ -406,20 +411,27 @@ int main(int argc, char** argv) {
 			++lmer_count;
 		}
 		// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
-		assert(end - start <= 65535);
-		assert(lmer < BILLION / 4);
+		assert(start <= MAX_START);
+		assert(end - start <= MAX_END_MINUS_START);
+		assert(lmer <= LMER_MASK);
 		lmer_indx[lmer] = make_tuple(start, end - start);
 		last_lmer = lmer;
 	}
 
 	cerr << chrono_time() << ":  " << "Done loading DB of " << mmers.size() << " mmers and " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 
+	l_start = chrono_time();
+
+	for (auto mmer : mmers) {
+		mmer_present[mmer / 64] |= ((uint64_t) 1) << (mmer % 64);
+	}
+	
+	cerr << chrono_time() << ":  " << "Done initializing MMER index. That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
 	close(fd);
 	
-	l_start = chrono_time();
-
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
