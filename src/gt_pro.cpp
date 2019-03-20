@@ -46,7 +46,7 @@ constexpr bool USE_BINARY_SEARCH = false;
 // See bit_encode
 constexpr uint8_t BITS_PER_BASE = 2;
 
-constexpr int L = 14;
+constexpr int L = 15;
 constexpr int K = 31;
 constexpr int M = K - L;
 
@@ -59,7 +59,7 @@ constexpr uint64_t MMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * M)) - 1;
 // Given L and M above, choose appropriately-sized integer types
 // to represent lmers and mmers.
 using LmerType = uint32_t;
-using MmerType = uint64_t;
+using MmerType = uint32_t;
 
 static_assert(LMER_MASK <= numeric_limits<LmerType>::max());
 static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
@@ -398,8 +398,8 @@ int main(int argc, char** argv) {
 
 	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
 		auto kmer = mmappedData[i];
-		MmerType mmer = MMER_MASK & kmer; // 34 lsbs of kmer, assuming M=17
-		LmerType lmer = LMER_MASK & (kmer >> (M * BITS_PER_BASE)); // 28 msbs of kmer, assuming L=14, M=17
+		MmerType mmer = MMER_MASK & kmer;
+		LmerType lmer = LMER_MASK & (kmer >> (M * BITS_PER_BASE));
 		mmers[end] = mmer;
 		snps[end] = mmappedData[i+1];
 		if (i > 0 && lmer != last_lmer) {
