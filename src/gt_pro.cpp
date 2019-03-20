@@ -64,6 +64,8 @@ using MmerType = uint32_t;
 static_assert(LMER_MASK <= numeric_limits<LmerType>::max());
 static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
 
+const uint64_t MAX_PRESENT = (((uint64_t) MMER_MASK) << 2) | 0x3;
+
 // Choose appropriately sized integer types to represent offsets into
 // the array of all mmers.
 using StartType = uint64_t;
@@ -228,9 +230,10 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, MmerType* mmers, 
 
 					const auto lcode = seq_encode<LmerType, L>(seq_buf + j, code_dict);
 					const auto mcode = seq_encode<MmerType, M>(seq_buf + j + L, code_dict);
+					const uint64_t mcode34 = ((((uint64_t) lcode) << (M * BITS_PER_BASE)) | mcode) & MAX_PRESENT;
 
-					const auto mpres = mmer_present[mcode / 64];
-					if ((mpres >> (mcode % 64)) & 1) {
+					const auto mpres = mmer_present[mcode34 / 64];
+					if ((mpres >> (mcode34 % 64)) & 1) {
 
 						const auto range = lmer_indx[lcode];
 						auto start = get<0>(range);
@@ -383,10 +386,11 @@ int main(int argc, char** argv) {
 	MmerType* mmers = new MmerType[filesize / 8];
 	uint64_t* snps = new uint64_t[filesize / 8];
 	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
-	uint64_t *mmer_present = new uint64_t[(1 + MMER_MASK) / 64];  // allocate 1 bit per possible mmer
+
+	uint64_t *mmer_present = new uint64_t[(1 + MAX_PRESENT) / 64];  // allocate 1 bit per possible mmer
 
 	memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
-	memset(mmer_present, 0, (1 + MMER_MASK) / 8);
+	memset(mmer_present, 0, (1 + MAX_PRESENT) / 8);
 
 	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 	l_start = chrono_time();
@@ -400,6 +404,8 @@ int main(int argc, char** argv) {
 		auto kmer = mmappedData[i];
 		MmerType mmer = MMER_MASK & kmer;
 		LmerType lmer = LMER_MASK & (kmer >> (M * BITS_PER_BASE));
+		uint64_t mpres = MAX_PRESENT & kmer;
+		mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
 		mmers[end] = mmer;
 		snps[end] = mmappedData[i+1];
 		if (i > 0 && lmer != last_lmer) {
@@ -415,16 +421,7 @@ int main(int argc, char** argv) {
 		last_lmer = lmer;
 	}
 
-	cerr << chrono_time() << ":  " << "Done loading DB of " << end << " mmers and " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
-
-	l_start = chrono_time();
-
-	for (uint64_t i = 0;  i < end;  ++i) {
-		auto mmer = mmers[i];
-		mmer_present[mmer / 64] |= ((uint64_t) 1) << (mmer % 64);
-	}
-	
-	cerr << chrono_time() << ":  " << "Done initializing MMER index. That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+	cerr << chrono_time() << ":  " << "Done loading DB of " << end << " mmers and " << lmer_count << " lmers, and initializing mmer index.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
