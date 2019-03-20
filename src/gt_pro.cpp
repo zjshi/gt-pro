@@ -68,11 +68,9 @@ const uint64_t MAX_PRESENT = (((uint64_t) MMER_MASK) << 4) | 0xf;
 
 // Choose appropriately sized integer types to represent offsets into
 // the array of all mmers.
-using StartType = uint64_t;
-using EndMinusStartType = uint16_t;
-using LmerRange = tuple<StartType, EndMinusStartType>;
-constexpr auto MAX_START = numeric_limits<StartType>::max();
-constexpr auto MAX_END_MINUS_START = numeric_limits<EndMinusStartType>::max();
+using LmerRange = uint64_t;
+constexpr auto MAX_START = (((uint64_t) 1) << 48) - 1;
+constexpr auto MAX_END_MINUS_START = 65535;
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
@@ -236,8 +234,8 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, MmerType* mmers, 
 					if ((mpres >> (mcode34 % 64)) & 1) {
 
 						const auto range = lmer_indx[lcode];
-						auto start = get<0>(range);
-						const auto len = get<1>(range);
+						auto start = range >> 16;
+						const auto len = range & 0xFFFF;
 
 						if (USE_BINARY_SEARCH) {
 							auto end = start + len;
@@ -386,7 +384,6 @@ int main(int argc, char** argv) {
 	MmerType* mmers = new MmerType[filesize / 8];
 	uint64_t* snps = new uint64_t[filesize / 8];
 	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
-
 	uint64_t *mmer_present = new uint64_t[(1 + MAX_PRESENT) / 64];  // allocate 1 bit per possible mmer
 
 	memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
@@ -417,7 +414,7 @@ int main(int argc, char** argv) {
 		assert(start <= MAX_START);
 		assert(end - start <= MAX_END_MINUS_START);
 		assert(lmer <= LMER_MASK);
-		lmer_indx[lmer] = make_tuple(start, end - start);
+		*((uint64_t*)(&(lmer_indx[lmer]))) = (start << 16) | (end - start);
 		last_lmer = lmer;
 	}
 
