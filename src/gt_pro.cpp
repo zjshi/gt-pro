@@ -66,7 +66,7 @@ static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
 
 // Choose appropriately sized integer types to represent offsets into
 // the array of all mmers.
-using StartType = uint32_t;
+using StartType = uint64_t;
 using EndMinusStartType = uint16_t;
 using LmerRange = tuple<StartType, EndMinusStartType>;
 constexpr auto MAX_START = numeric_limits<StartType>::max();
@@ -135,7 +135,7 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<MmerType>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, MmerType* mmers, uint64_t* snps, int channel, char* in_path, char* o_name){
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
 
@@ -377,19 +377,16 @@ int main(int argc, char** argv) {
 	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
 
-	vector<MmerType> mmers;
-	vector<uint64_t> snps;
-
 	auto l_start = chrono_time();
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
+	MmerType* mmers = new MmerType[filesize / 8];
+	uint64_t* snps = new uint64_t[filesize / 8];
 	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
 	uint64_t *mmer_present = new uint64_t[(1 + MMER_MASK) / 64];  // allocate 1 bit per possible mmer
 
 	memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
 	memset(mmer_present, 0, (1 + MMER_MASK) / 8);
-	mmers.reserve(filesize / 8);
-	snps.reserve(filesize / 8);
 
 	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 	l_start = chrono_time();
@@ -398,18 +395,18 @@ int main(int argc, char** argv) {
 	LmerType last_lmer;
 	uint64_t start = 0;
 	uint64_t end = 0;
-	
+
 	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
 		auto kmer = mmappedData[i];
 		MmerType mmer = MMER_MASK & kmer; // 34 lsbs of kmer, assuming M=17
 		LmerType lmer = LMER_MASK & (kmer >> (M * BITS_PER_BASE)); // 28 msbs of kmer, assuming L=14, M=17
-		mmers.push_back(mmer);
-		++end;
-		snps.push_back(mmappedData[i+1]);
+		mmers[end] = mmer;
+		snps[end] = mmappedData[i+1];
 		if (i > 0 && lmer != last_lmer) {
-			start = end - 1;
+			start = end;
 			++lmer_count;
 		}
+		++end;
 		// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
 		assert(start <= MAX_START);
 		assert(end - start <= MAX_END_MINUS_START);
@@ -418,11 +415,12 @@ int main(int argc, char** argv) {
 		last_lmer = lmer;
 	}
 
-	cerr << chrono_time() << ":  " << "Done loading DB of " << mmers.size() << " mmers and " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+	cerr << chrono_time() << ":  " << "Done loading DB of " << end << " mmers and " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 
 	l_start = chrono_time();
 
-	for (auto mmer : mmers) {
+	for (uint64_t i = 0;  i < end;  ++i) {
+		auto mmer = mmers[i];
 		mmer_present[mmer / 64] |= ((uint64_t) 1) << (mmer % 64);
 	}
 	
@@ -432,10 +430,12 @@ int main(int argc, char** argv) {
 	assert(rc == 0);
 	close(fd);
 	
+	l_start = chrono_time();
+
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, ref(mmers), ref(snps), optind - in_pos, argv[optind], oname));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmers, snps, optind - in_pos, argv[optind], oname));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
