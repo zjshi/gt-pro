@@ -37,34 +37,49 @@ using namespace std;
 constexpr auto step_size = 256 * 1024 * 1024;
 constexpr auto buffer_size = 256 * 1024 * 1024;
 
-// See bit_encode
-constexpr uint8_t BITS_PER_BASE = 2;
+// The DB k-mers are 31-mers.
+constexpr auto K = 31;
 
-constexpr int L = 15;
-constexpr int K = 31;
-constexpr int M = K - L;
+// 2 bits to encode each ACTG letter
+constexpr auto BITS_PER_BASE = 2;
 
-static_assert(L > 0);
-static_assert(M > 0);
+// number of bits to encode entire K-mer
+constexpr auto K2 = BITS_PER_BASE * K;
 
-constexpr uint64_t LMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * L)) - 1;
-constexpr uint64_t MMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * M)) - 1;
+// Number of bits in the prefix part of the K-mer (also called L-mer,
+// even though it might not correspond to an exact number of bases).
+// This has a substantial effect on memory use.  Rule of thumb for
+// perf is L2 >= K2 - M3.
+constexpr auto L2 = 29;
 
-// Given L and M above, choose appropriately-sized integer types
-// to represent lmers and mmers.
-using LmerType = uint32_t;
-using MmerType = uint32_t;
+// Number of bits in the suffix part of the K-mer (also called M-mer,
+// even though it might not correspond to an exact number of DNA bases).
+constexpr auto M2 = K2 - L2;
 
-static_assert(LMER_MASK <= numeric_limits<LmerType>::max());
-static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
+// Number of bits in the MMER_PRESENT index.  This has a substantial effect
+// on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
+constexpr auto M3 = 36;
 
-const uint64_t MAX_PRESENT = (((uint64_t) MMER_MASK) << 4) | 0xf;
+static_assert(L2 > 0);
+static_assert(L2 <= 32);
+static_assert(M2 > 0);
+static_assert(M2 < 64);
+static_assert(M3 > 0);
+static_assert(M3 < 64);
+static_assert(L2 >= K2 - M3);
+
+constexpr uint64_t LSB = 1;
+constexpr auto LMER_MASK = (LSB << L2) - LSB;
+constexpr auto MMER_MASK = (LSB << M2) - LSB;
+const auto MAX_PRESENT = (LSB << M3) - LSB;
 
 // Choose appropriately sized integer types to represent offsets into
-// the array of all mmers.
+// the database.
 using LmerRange = uint64_t;
-constexpr auto MAX_START = (((uint64_t) 1) << 48) - 1;
-constexpr auto MAX_END_MINUS_START = 65535;
+constexpr auto START_BITS = 48;
+constexpr auto END_MINUS_START_BITS = 64 - START_BITS;
+constexpr auto MAX_START = (LSB << START_BITS) - LSB;
+constexpr auto MAX_END_MINUS_START = (LSB << END_MINUS_START_BITS) - LSB;
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
@@ -220,15 +235,15 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* mmapped
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const uint64_t kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
-					const uint64_t mmer_pres = kmer & MAX_PRESENT;
+					const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
+					const auto mmer_pres = kmer & MAX_PRESENT;
 					const auto mpres = mmer_present[mmer_pres / 64] >> (mmer_pres % 64);
 
 					if (mpres & 1) {
-						const LmerType lmer = kmer >> (M * BITS_PER_BASE);
+						const auto lmer = kmer >> M2;
 						const auto range = lmer_indx[lmer];
-						const auto start = range >> 16;
-						const auto end = start + (range & 0xFFFF);
+						const auto start = range >> END_MINUS_START_BITS;
+						const auto end = start + (range & MAX_END_MINUS_START);
 
 						for (uint64_t z = start;  z < end;  z += 2) {
 							const auto db_kmer = mmappedData[z];
@@ -238,9 +253,9 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* mmapped
 									kmer_matches.push_back(db_snp);
 									footprint.insert({db_snp, 1});
 								}
-							} //else if (kmer < db_kmer) {
-							//	break;
-							//}
+							} else if (kmer < db_kmer) {
+								break;
+							}
 						}
 					}
 				}
@@ -354,17 +369,18 @@ int main(int argc, char** argv) {
 	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
 	uint64_t *mmer_present = new uint64_t[(1 + MAX_PRESENT) / 64];  // allocate 1 bit per possible mmer
 
-	const char* OPTIMIZED_DB_MMER_PRESENT = "optimized_db_mmer_present.bin";
-	const char* OPTIMIZED_DB_LMER_INDX = "optimized_db_lmer_indx.bin";
+	const auto OPTIMIZED_DB_MMER_PRESENT = string("optimized_db_mmer_present_") + to_string(M3) + ".bin";
+	const auto OPTIMIZED_DB_LMER_INDX = string("optimized_db_lmer_indx_") + to_string(L2) + ".bin";
 
-	FILE* dbin = fopen(OPTIMIZED_DB_MMER_PRESENT, "rb");
+	FILE* dbin = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "rb");
 	if (dbin) {
-		int success = fread(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbin);
+		cerr << chrono_time() << ":  Loading MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << "." << endl;
+		const auto success = fread(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbin);
 		if (success == (1 + MAX_PRESENT) / 64) {
-			cerr << chrono_time() << ":  Read MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << endl;
+			cerr << chrono_time() << ":  Loaded MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << "." << endl;
 			fclose(dbin);
 		} else {
-			cerr << chrono_time() << ":  Failed to read " << OPTIMIZED_DB_MMER_PRESENT << ".  This is fine, it will only slow down init." << endl;
+			cerr << chrono_time() << ":  Failed to load " << OPTIMIZED_DB_MMER_PRESENT << ".  This is fine, it will only slow down init." << endl;
 			fclose(dbin);
 			dbin = NULL;
 		}
@@ -375,14 +391,15 @@ int main(int argc, char** argv) {
 		memset(mmer_present, 0, (1 + MAX_PRESENT) / 8);
 	}
 
-	FILE* lmerdbin = fopen(OPTIMIZED_DB_LMER_INDX, "rb");
+	FILE* lmerdbin = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "rb");
 	if (lmerdbin) {
-		int success = fread(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), lmerdbin);
+		cerr << chrono_time() << ":  Loading LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << "." << endl;
+		const auto success = fread(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), lmerdbin);
 		if (success == (1 + LMER_MASK)) {
-			cerr << chrono_time() << ":  Read LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << endl;
+			cerr << chrono_time() << ":  Loaded LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << "." << endl;
 			fclose(lmerdbin);
 		} else {
-			cerr << chrono_time() << ":  Failed to read " << OPTIMIZED_DB_LMER_INDX << ".  This is fine, it will only slow down init." << endl;
+			cerr << chrono_time() << ":  Failed to load " << OPTIMIZED_DB_LMER_INDX << ".  This is fine, it will only slow down init." << endl;
 			fclose(lmerdbin);
 			lmerdbin = NULL;
 		}
@@ -393,7 +410,7 @@ int main(int argc, char** argv) {
 		memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
 	}
 
-	LmerType last_lmer;
+	uint64_t last_lmer;
 	uint64_t start = 0;
 
 	uint64_t lmer_count = -1;
@@ -401,9 +418,8 @@ int main(int argc, char** argv) {
 	if (!(lmerdbin) || !(dbin)) {
 		lmer_count = filesize ? 1 : 0;
 		for (uint64_t end = 0;  end < filesize / 8;  end += 2) {
-			auto kmer = mmappedData[end];
-			MmerType mmer = kmer & MMER_MASK;
-			LmerType lmer = kmer >> (M * BITS_PER_BASE);
+			const auto kmer = mmappedData[end];
+			const auto lmer = kmer >> M2;
 			if (!(dbin)) {
 				uint64_t mpres = kmer & MAX_PRESENT;
 				mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
@@ -417,7 +433,7 @@ int main(int argc, char** argv) {
 			assert(end - start < MAX_END_MINUS_START);
 			assert(lmer <= LMER_MASK);
 			if (!(lmerdbin)) {
-				*((uint64_t*)(&(lmer_indx[lmer]))) = (start << 16) | (end - start + 1);
+				*((uint64_t*)(&(lmer_indx[lmer]))) = (start << END_MINUS_START_BITS) | (end - start + 1);
 			}
 			last_lmer = lmer;
 		}
@@ -427,9 +443,9 @@ int main(int argc, char** argv) {
 
 	if (!(dbin)) {
 		l_start = chrono_time();
-		FILE* dbout = fopen(OPTIMIZED_DB_MMER_PRESENT, "wb");
+		FILE* dbout = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "wb");
 		assert(dbout);
-		int success = fwrite(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbout);	
+		const auto success = fwrite(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbout);	
 		fclose(dbout);
 		assert(success == (1 + MAX_PRESENT) / 64);
 		cerr << chrono_time() << ":  Done writing optimized MMER_PRESENT.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
@@ -437,9 +453,9 @@ int main(int argc, char** argv) {
 
 	if (!(lmerdbin)) {
 		l_start = chrono_time();		
-		FILE* dbout = fopen(OPTIMIZED_DB_LMER_INDX, "wb");
+		FILE* dbout = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "wb");
 		assert(dbout);
-		int success = fwrite(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), dbout);	
+		const auto success = fwrite(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), dbout);	
 		fclose(dbout);
 		assert(success == (1 + LMER_MASK));
 		cerr << chrono_time() << ":  Done writing optimized LMER_INDX with " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
