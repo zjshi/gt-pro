@@ -64,7 +64,7 @@ using MmerType = uint32_t;
 static_assert(LMER_MASK <= numeric_limits<LmerType>::max());
 static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
 
-const uint64_t MAX_PRESENT = (((uint64_t) MMER_MASK) << 2) | 0x3;
+const uint64_t MAX_PRESENT = (((uint64_t) MMER_MASK) << 4) | 0xf;
 
 // Choose appropriately sized integer types to represent offsets into
 // the array of all mmers.
