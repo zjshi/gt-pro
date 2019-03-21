@@ -8,7 +8,7 @@
 #ifdef _MAP_POPULATE_AVAILABLE
 #define MMAP_FLAGS (MAP_PRIVATE | MAP_POPULATE)
 #else
-#define MMAP_FLAGS MAP_PRIVATE
+#define MMAP_FLAGS (MAP_PRIVATE)
 #endif
 
 #include <sys/mman.h>
@@ -31,46 +31,32 @@
 #include <fstream>
 #include <thread>
 #include <limits>
+#include <libgen.h>
+#include <regex>
 
 using namespace std;
 
 constexpr auto step_size = 256 * 1024 * 1024;
 constexpr auto buffer_size = 256 * 1024 * 1024;
 
-// For suboptimal values of L, binary search can be 20% faster
-// than linear search.  However, for optimal values of L, binary
-// search can be up to 3% slower than linear search.  The value
-// of L below is optimal for our dataset => no binary search.
-constexpr bool USE_BINARY_SEARCH = false;
+// The DB k-mers are 31-mers.
+constexpr auto K = 31;
 
-// See bit_encode
-constexpr uint8_t BITS_PER_BASE = 2;
+// 2 bits to encode each ACTG letter
+constexpr auto BITS_PER_BASE = 2;
 
-constexpr int L = 14;
-constexpr int K = 31;
-constexpr int M = K - L;
+// number of bits to encode entire K-mer
+constexpr auto K2 = BITS_PER_BASE * K;
 
-static_assert(L > 0);
-static_assert(M > 0);
-
-constexpr uint64_t LMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * L)) - 1;
-constexpr uint64_t MMER_MASK = (((uint64_t) 1) << (BITS_PER_BASE * M)) - 1;
-
-// Given L and M above, choose appropriately-sized integer types
-// to represent lmers and mmers.
-using LmerType = uint32_t;
-using MmerType = uint64_t;
-
-static_assert(LMER_MASK <= numeric_limits<LmerType>::max());
-static_assert(MMER_MASK <= numeric_limits<MmerType>::max());
+constexpr uint64_t LSB = 1;
 
 // Choose appropriately sized integer types to represent offsets into
-// the array of all mmers.
-using StartType = uint32_t;
-using EndMinusStartType = uint16_t;
-using LmerRange = tuple<StartType, EndMinusStartType>;
-constexpr auto MAX_START = numeric_limits<StartType>::max();
-constexpr auto MAX_END_MINUS_START = numeric_limits<EndMinusStartType>::max();
+// the database.
+using LmerRange = uint64_t;
+constexpr auto START_BITS = 48;
+constexpr auto END_MINUS_START_BITS = 64 - START_BITS;
+constexpr auto MAX_START = (LSB << START_BITS) - LSB;
+constexpr auto MAX_END_MINUS_START = (LSB << END_MINUS_START_BITS) - LSB;
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
@@ -135,7 +121,16 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<MmerType>& mmers, vector<uint64_t>& snps, int channel, char* in_path, char* o_name){
+template <int M2, int M3>
+bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int aM2, int aM3){
+
+	if (aM2 != M2 || aM3 != M3) {
+		return false;
+	}
+
+	const uint64_t MAX_PRESENT = (LSB << M3) - LSB;
+    constexpr int XX = (M3 + 1) / 2;  // number DNA letters to cover MAX_PRESENT
+
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
 
@@ -226,49 +221,26 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<MmerType>&
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const auto lcode = seq_encode<LmerType, L>(seq_buf + j, code_dict);
-					const auto mcode = seq_encode<MmerType, M>(seq_buf + j + L, code_dict);
+					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX, code_dict) & MAX_PRESENT;
+					const auto mpres = mmer_present[mmer_pres / 64] >> (mmer_pres % 64);
 
-					const auto mpres = mmer_present[mcode / 64];
-					if ((mpres >> (mcode % 64)) & 1) {
+					if (mpres & 1) {
+						const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
+						const auto lmer = kmer >> M2;
+						const auto range = lmer_indx[lmer];
+						const auto start = range >> END_MINUS_START_BITS;
+						const auto end = start + (range & MAX_END_MINUS_START);
 
-						const auto range = lmer_indx[lcode];
-						auto start = get<0>(range);
-						const auto len = get<1>(range);
-
-						if (USE_BINARY_SEARCH) {
-							auto end = start + len;
-							const auto orig_end = end;
-							// Binary search invariant:
-							//     start <= end && mmers[start - 1] < mcode <= mmers[end]
-							while (start != end) {
-								auto middle = (start + end) / 2;
-								if (mcode <= mmers[middle]) {
-									end = middle;
-								} else {
-									start = middle + 1;
+						for (uint64_t z = start;  z < end;  z += 2) {							
+							const auto db_kmer = data[z];
+							if (kmer == db_kmer) {
+								const auto db_snp = data[z + 1];
+								if (footprint.find(db_snp) == footprint.end()) {
+									kmer_matches.push_back(db_snp);
+									footprint.insert({db_snp, 1});
 								}
-							}
-							// Binary search postcondition:
-							//      invariant && start == end
-							// Therefore all occurrences of mcode can be found as follows.
-							for (auto z=start;  z < orig_end && mcode == mmers[z]; ++z) {
-								if (footprint.find(snps[z]) == footprint.end()) {
-									kmer_matches.push_back(snps[z]);
-									footprint.insert({snps[z], 1});
-								}
-							}
-						}
-
-						if (!(USE_BINARY_SEARCH) && len) {
-							// linear search
-							for (uint64_t z = start;  z < start + len;  ++z) {
-								if (mcode == mmers[z]) {
-									if (footprint.find(snps[z]) == footprint.end()) {
-										kmer_matches.push_back(snps[z]);
-										footprint.insert({snps[z], 1});
-									}
-								}
+							} else if (kmer < db_kmer) {
+								break;
 							}
 						}
 					}
@@ -316,6 +288,44 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, vector<MmerType>&
 	cerr << chrono_time() << ":  " << "Completed output for " << in_path << endl;
 
 	fh.close();
+
+	return true;
+}
+
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int M2, const int M3) {
+	// Only one of these will really run.  By making them known at compile time, we increase speed.
+	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36}.
+	bool match = false;
+	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	assert(match && "See comment for supporrted values of L and M.");
 }
 
 void display_usage(char* fname){
@@ -333,10 +343,22 @@ int main(int argc, char** argv) {
 	char* db_path = (char *)"";
 	char* oname = (char *)"./out";
 
+	// Number of bits in the prefix part of the K-mer (also called L-mer,
+	// even though it might not correspond to an exact number of bases).
+	// This has a substantial effect on memory use.  Rule of thumb for
+	// perf is L2 >= K2 - M3.	
+	auto L2 = 29;
+
+	// Number of bits in the MMER_PRESENT index.  This has a substantial effect
+	// on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
+	auto M3 = 36;
+
 	int n_threads = 1;
 
+	auto preload = false;
+
 	int opt;
-	while ((opt = getopt(argc, argv, "d:t:o:h")) != -1) {
+	while ((opt = getopt(argc, argv, "pl:m:d:t:o:h")) != -1) {
 		switch (opt) {
 			case 'd':
 				dbflag = true;
@@ -348,13 +370,36 @@ int main(int argc, char** argv) {
 			case 'o':
 				oname = optarg;
 				break;
+			case 'l':
+				L2 = stoi(optarg);
+				break;
+			case 'm':
+				M3 = stoi(optarg);
+				break;
+			case 'p':
+				preload = true;
+				break;
 			case 'h': case '?':
 				display_usage(fname);
 				exit(1);
 		}	
 	}
 
-	cout << fname << '\t' << db_path << '\t' << n_threads << endl;
+	const auto M2 = K2 - L2;
+
+	assert(L2 > 0);
+	assert(L2 <= 32);
+	assert(M2 > 0);
+	assert(M2 < 64);
+	assert(M3 > 0);
+	assert(M3 < 64);
+	assert(L2 >= K2 - M3);
+
+	const auto LMER_MASK = (LSB << L2) - LSB;
+	const auto MMER_MASK = (LSB << M2) - LSB;
+	const auto MAX_PRESENT = (LSB << M3) - LSB;
+
+	cout << fname << '\t' << db_path << '\t' << n_threads << "\t" << (preload ? "preload" : "mmap") << "\t" << L2 << "\t" << M3 << endl;
 
 	if (!dbflag) {
 		cout << "missing argument: -d <sckmerdb_path: string>\n";
@@ -377,65 +422,125 @@ int main(int argc, char** argv) {
 	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
 
-	vector<MmerType> mmers;
-	vector<uint64_t> snps;
-
 	auto l_start = chrono_time();
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
 	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
-	uint64_t *mmer_present = new uint64_t[(1 + MMER_MASK) / 64];  // allocate 1 bit per possible mmer
+	uint64_t *mmer_present = new uint64_t[(1 + MAX_PRESENT) / 64];  // allocate 1 bit per possible mmer
 
-	memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
-	memset(mmer_present, 0, (1 + MMER_MASK) / 8);
-	mmers.reserve(filesize / 8);
-	snps.reserve(filesize / 8);
+	string dbbase = string(basename(db_path));
+	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
+	dbbase = regex_replace(dbbase, regex("\\."), "_");
 
-	cerr << chrono_time() << ":  " << "Allocated memory.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
-	l_start = chrono_time();
+	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
+	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_" + to_string(L2) + ".bin";
 
-	uint64_t lmer_count = filesize ? 1 : 0;
-	LmerType last_lmer;
-	uint64_t start = 0;
-	uint64_t end = 0;
-	
-	for (uint64_t i = 0;  i < filesize / 8;  i += 2) {
-		auto kmer = mmappedData[i];
-		MmerType mmer = MMER_MASK & kmer; // 34 lsbs of kmer, assuming M=17
-		LmerType lmer = LMER_MASK & (kmer >> (M * BITS_PER_BASE)); // 28 msbs of kmer, assuming L=14, M=17
-		mmers.push_back(mmer);
-		++end;
-		snps.push_back(mmappedData[i+1]);
-		if (i > 0 && lmer != last_lmer) {
-			start = end - 1;
-			++lmer_count;
+	FILE* dbin = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "rb");
+	if (dbin) {
+		cerr << chrono_time() << ":  Loading MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << "." << endl;
+		const auto success = fread(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbin);
+		if (success == (1 + MAX_PRESENT) / 64) {
+			cerr << chrono_time() << ":  Loaded MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << "." << endl;
+			fclose(dbin);
+		} else {
+			cerr << chrono_time() << ":  Failed to load " << OPTIMIZED_DB_MMER_PRESENT << ".  This is fine, it will only slow down init." << endl;
+			fclose(dbin);
+			dbin = NULL;
 		}
-		// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
-		assert(start <= MAX_START);
-		assert(end - start <= MAX_END_MINUS_START);
-		assert(lmer <= LMER_MASK);
-		lmer_indx[lmer] = make_tuple(start, end - start);
-		last_lmer = lmer;
 	}
 
-	cerr << chrono_time() << ":  " << "Done loading DB of " << mmers.size() << " mmers and " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+	if (!(dbin)) {
+		cerr << chrono_time() << ":  MMER_PRESENT will be recomputed." << endl;
+		memset(mmer_present, 0, (1 + MAX_PRESENT) / 8);
+	}
+
+	FILE* lmerdbin = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "rb");
+	if (lmerdbin) {
+		cerr << chrono_time() << ":  Loading LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << "." << endl;
+		const auto success = fread(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), lmerdbin);
+		if (success == (1 + LMER_MASK)) {
+			cerr << chrono_time() << ":  Loaded LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << "." << endl;
+			fclose(lmerdbin);
+		} else {
+			cerr << chrono_time() << ":  Failed to load " << OPTIMIZED_DB_LMER_INDX << ".  This is fine, it will only slow down init." << endl;
+			fclose(lmerdbin);
+			lmerdbin = NULL;
+		}
+	}
+
+	if (!(lmerdbin)) {
+		cerr << chrono_time() << ":  LMER_INDX will be recomputed." << endl;
+		memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
+	}
+
+	uint64_t last_lmer;
+	uint64_t start = 0;
+
+	uint64_t lmer_count = -1;
+
+	auto data = mmappedData;
+
+	if (preload) {
+		cerr << chrono_time() << ":  Preloading entire DB as requested.  This will increase memory use and slow down init, but makes queries faster." << endl;
+		data = new uint64_t[filesize / 8];
+		for (uint64_t i = 0;  i < filesize / 8;  ++i) {
+			data[i] = mmappedData[i];
+		}
+		cerr << chrono_time() << ":  Preloaded entire DB as requested." << endl;
+	}
+
+	if (!(lmerdbin) || !(dbin)) {
+		lmer_count = filesize ? 1 : 0;
+		for (uint64_t end = 0;  end < filesize / 8;  end += 2) {
+			const auto kmer = data[end];
+			const auto lmer = kmer >> M2;
+			if (!(dbin)) {
+				uint64_t mpres = kmer & MAX_PRESENT;
+				mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
+			}
+			if (end > 0 && lmer != last_lmer) {
+				start = end;
+				++lmer_count;
+			}
+			// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
+			assert(start <= MAX_START);
+			assert(end - start < MAX_END_MINUS_START);
+			assert(lmer <= LMER_MASK);
+			if (!(lmerdbin)) {
+				*((uint64_t*)(&(lmer_indx[lmer]))) = (start << END_MINUS_START_BITS) | (end - start + 1);
+			}
+			last_lmer = lmer;
+		}
+	}
+
+	cerr << chrono_time() << ":  " << "Done with init for DB with " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
+
+	if (!(dbin)) {
+		l_start = chrono_time();
+		FILE* dbout = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "wb");
+		assert(dbout);
+		const auto success = fwrite(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbout);	
+		fclose(dbout);
+		assert(success == (1 + MAX_PRESENT) / 64);
+		cerr << chrono_time() << ":  Done writing optimized MMER_PRESENT.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+	}
+
+	if (!(lmerdbin)) {
+		l_start = chrono_time();		
+		FILE* dbout = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "wb");
+		assert(dbout);
+		const auto success = fwrite(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), dbout);	
+		fclose(dbout);
+		assert(success == (1 + LMER_MASK));
+		cerr << chrono_time() << ":  Done writing optimized LMER_INDX with " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+	}
 
 	l_start = chrono_time();
 
-	for (auto mmer : mmers) {
-		mmer_present[mmer / 64] |= ((uint64_t) 1) << (mmer % 64);
-	}
-	
-	cerr << chrono_time() << ":  " << "Done initializing MMER index. That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
-
-	int rc = munmap(mmappedData, filesize);
-	assert(rc == 0);
-	close(fd);
-	
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, ref(mmers), ref(snps), optind - in_pos, argv[optind], oname));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, data, optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
@@ -461,6 +566,17 @@ int main(int argc, char** argv) {
 		}
 		th_array.clear();
 	}
+
+	int rc = munmap(mmappedData, filesize);
+	assert(rc == 0);
+	close(fd);
+
+	if (preload) {
+		delete data;		
+	}
+
+	delete mmer_present;
+	delete lmer_indx;
 
 	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
