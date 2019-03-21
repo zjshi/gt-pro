@@ -121,7 +121,16 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int M2, uint64_t MAX_PRESENT){
+template <int M2, int M3>
+bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int aM2, int aM3){
+
+	if (aM2 != M2 || aM3 != M3) {
+		return false;
+	}
+
+	const uint64_t MAX_PRESENT = (LSB << M3) - LSB;
+    constexpr int XX = (M3 + 1) / 2;  // number DNA letters to cover MAX_PRESENT
+
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
 
@@ -212,17 +221,17 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, i
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
-					const auto mmer_pres = kmer & MAX_PRESENT;
+					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX, code_dict) & MAX_PRESENT;
 					const auto mpres = mmer_present[mmer_pres / 64] >> (mmer_pres % 64);
 
 					if (mpres & 1) {
+						const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
 						const auto lmer = kmer >> M2;
 						const auto range = lmer_indx[lmer];
 						const auto start = range >> END_MINUS_START_BITS;
 						const auto end = start + (range & MAX_END_MINUS_START);
 
-						for (uint64_t z = start;  z < end;  z += 2) {
+						for (uint64_t z = start;  z < end;  z += 2) {							
 							const auto db_kmer = data[z];
 							if (kmer == db_kmer) {
 								const auto db_snp = data[z + 1];
@@ -279,6 +288,44 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, i
 	cerr << chrono_time() << ":  " << "Completed output for " << in_path << endl;
 
 	fh.close();
+
+	return true;
+}
+
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int M2, const int M3) {
+	// Only one of these will really run.  By making them known at compile time, we increase speed.
+	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36}.
+	bool match = false;
+	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
+	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	assert(match && "See comment for supporrted values of L and M.");
 }
 
 void display_usage(char* fname){
@@ -493,7 +540,7 @@ int main(int argc, char** argv) {
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, data, optind - in_pos, argv[optind], oname, M2, MAX_PRESENT));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, data, optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
