@@ -19,7 +19,7 @@ using namespace std;
 //    g++ -O3 --std=c++11 -o vfkmrz_bunion vfkmrz_bunion.cpp
 //    ./vfkmrz_bunion -k1 </path/to/kmer_list1> -k2 </path/to/kmer_list2>
 //
-// standard fastq format only for input, otherwise failure is almost guaranteed. 
+// standard fastq format only for input, otherwise failure is almost guaranteed.
 
 // global variable declaration starts here
 constexpr auto k = 31;
@@ -117,7 +117,7 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
 
     //auto fh = fstream(out_path, ios::out | ios::binary);
 
-	bool id_switch = false;
+	int column = 0;
     bool has_wildcard = false;
 
     while (true) {
@@ -139,7 +139,7 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
 
                 if (has_wildcard) {
                     has_wildcard = false;
-                    continue;    
+                    continue;
                 }
 
                 auto code = seq_encode<int_type>(seq_buf, k, code_dict, b_mask);
@@ -152,17 +152,17 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
                 cur_pos = 0;
 				snp_pos = 0;
 
-				id_switch = false;
+				column = 0;
             } else if (c == '\t'){
-				id_switch = true;
+				++column;
 			} else {
                 if (c == 'N') {
-                    has_wildcard = true;    
+                    has_wildcard = true;
                 }
 
-				if (id_switch) {
-					snp_id[snp_pos++] = c;	
-				} else {
+				if (column == 2) {
+					snp_id[snp_pos++] = c;
+				} else if (column == 0) {
 					seq_buf[cur_pos++] = c;
 				}
             }
@@ -193,7 +193,7 @@ void bit_load(vector<char>& buffer, vector<tuple<int_type, int_type>>& k_vec, co
 
     //auto fh = fstream(out_path, ios::out | ios::binary);
 
-	bool id_switch = false;
+	int column = 0;
     bool has_wildcard = false;
 
     while (true) {
@@ -215,7 +215,7 @@ void bit_load(vector<char>& buffer, vector<tuple<int_type, int_type>>& k_vec, co
 
                 if (has_wildcard) {
                     has_wildcard = false;
-                    continue;    
+                    continue;
                 }
 
                 auto code = seq_encode<int_type>(seq_buf, k, code_dict, b_mask);
@@ -227,17 +227,17 @@ void bit_load(vector<char>& buffer, vector<tuple<int_type, int_type>>& k_vec, co
 
                 cur_pos = 0;
 				snp_pos = 0;
-				id_switch = false;
+				column = 0;
             } else if (c == '\t'){
-				id_switch = true;
+				++column;
 			} else {
                 if (c == 'N') {
-                    has_wildcard = true;    
+                    has_wildcard = true;
                 }
 
-				if (id_switch) {
-					snp_id[snp_pos++] = c;	
-				} else {
+				if (column == 2) {
+					snp_id[snp_pos++] = c;
+				} else if (column == 0) {
 					seq_buf[cur_pos++] = c;
 				}
             }
@@ -257,7 +257,7 @@ bool cmp_tuple(const tuple<int_type, int_type> &a, const tuple<int_type, int_typ
 }
 
 template <class int_type>
-void multi_btc64() {	
+void multi_btc64() {
     int_type lsb = 1;
     int_type b_mask = (lsb << bpb) - lsb;
 
@@ -267,23 +267,23 @@ void multi_btc64() {
     vector<tuple<int_type, int_type>> kdb;
     vector<char> buffer(buffer_size);
 
-    bit_load<int_type>(buffer, kdb, code_dict, b_mask);	
+    bit_load<int_type>(buffer, kdb, code_dict, b_mask);
 
     auto timeit = chrono_time();
-    sort(kdb.begin(), kdb.end(), cmp_tuple<int_type>);
+    sort(kdb.begin(), kdb.end());
     // typename vector<int_type>::iterator ip = unique(kdb.begin(), kdb.end());
     // kdb.resize(std::distance(kdb.begin(), ip));
     cerr << "Done!\n" << "It takes " << (chrono_time() - timeit) / 1000 << " secs" << endl;
     cerr << "the kmer list has " << kdb.size() << " kmers" << endl;
 
     // char seq_buf[k+1];
-	
+
 	vector<int_type> o_buff;
 
     ofstream fh(out_path, ofstream::out | ofstream::binary);
 
     for (auto it = kdb.begin(); it != kdb.end(); ++it) {
-        // seq_decode(seq_buf, k+1, *it, code_dict, b_mask);    
+        // seq_decode(seq_buf, k+1, *it, code_dict, b_mask);
         // fh << seq_buf << "\n";
         // fh << *it << "\n";
 
@@ -298,7 +298,7 @@ void multi_btc64() {
 }
 
 template <class int_type>
-void multi_btc64(int n_path, char** kpaths) {	
+void multi_btc64(int n_path, char** kpaths) {
     int_type lsb = 1;
     int_type b_mask = (lsb << bpb) - lsb;
 
@@ -310,12 +310,12 @@ void multi_btc64(int n_path, char** kpaths) {
 
     for (int i = 1; i < n_path; ++i) {
         cerr << kpaths[i] << endl;
-        bit_load<int_type>(kpaths[i], buffer, kdb, code_dict, b_mask);	
+        bit_load<int_type>(kpaths[i], buffer, kdb, code_dict, b_mask);
     }
 
     auto timeit = chrono_time();
 
-	sort(kdb.begin(), kdb.end(), cmp_tuple<int_type>);
+	sort(kdb.begin(), kdb.end());
     // typename vector<int_type>::iterator ip = unique(kdb.begin(), kdb.end());
     // kdb.resize(std::distance(kdb.begin(), ip));
     cerr << "Sorting done! " << "It takes " << (chrono_time() - timeit) / 1000 << " secs" << endl;
@@ -330,18 +330,23 @@ void multi_btc64(int n_path, char** kpaths) {
 
     cerr << "start to check conflicts" << endl;
     for (auto it = kdb.begin(); it+1 != kdb.end(); ++it) {
-		// seq_decode(seq_buf, k+1, get<0>(*it), code_dict, b_mask);    
+		// seq_decode(seq_buf, k+1, get<0>(*it), code_dict, b_mask);
 		// cerr << seq_buf << '\t' << get<1>(*it) << '\n';
-		
+
+        auto spe1 = stoi(to_string(get<1>(*it)).substr(0, 6));
+        //cerr << "consider kmer " << hex << get<0>(*it) << " species " << dec << spe1 << endl;
+
 		if (get<0>(*it) == get<0>(*(it+1))) {
-			auto spe1 = stoi(to_string(get<1>(*it)).substr(0, 6));
 			auto spe2 = stoi(to_string(get<1>(*(it+1))).substr(0, 6));
+            //cerr << "consider next species " << spe2;
 
 			if (spe1 != spe2) {
-				checkout_flag = false;			
+				checkout_flag = false;
 			} else {
-				auto_queue.push_back(*it);	
+				auto_queue.push_back(*it);
 			}
+
+            //cerr << " monospecific " << checkout_flag << endl;
 
 			continue;
 		}
@@ -350,18 +355,21 @@ void multi_btc64(int n_path, char** kpaths) {
 		if (!checkout_flag) {
 			auto_queue.clear();
 			checkout_flag = true;
+            //cerr << "do not emit " << hex << get<0>(*it) << endl;
 		} else {
 			if (auto_queue.size() > 0){
 				for(auto iq = auto_queue.begin(); iq != auto_queue.end(); ++iq){
 					o_buff.push_back(get<0>(*iq));
 					o_buff.push_back(get<1>(*iq));
+                    //cerr << "emit " << hex << get<0>(*iq) << " " << dec << get<1>(*iq) << endl;
 				}
 
 				auto_queue.clear();
 			}
 			o_buff.push_back(get<0>(*it));
 			o_buff.push_back(get<1>(*it));
-		} 
+            //cerr << "emit " << hex << get<0>(*it) << " " << dec << get<1>(*it) << endl;
+		}
     }
 
 	auto end_ele = kdb.back();
@@ -370,13 +378,17 @@ void multi_btc64(int n_path, char** kpaths) {
 			for(auto iq = auto_queue.begin(); iq != auto_queue.end(); ++iq){
 				o_buff.push_back(get<0>(*iq));
 				o_buff.push_back(get<1>(*iq));
+                //cerr << "emit " << hex << get<0>(*iq) << " " << dec << get<1>(*iq) << endl;
 			}
 
 			auto_queue.clear();
 		}
 		o_buff.push_back(get<0>(end_ele));
 		o_buff.push_back(get<1>(end_ele));
-	}
+        //cerr << "emit " << hex << get<0>(end_ele) << " " << dec << get<1>(end_ele) << endl;
+	} else {
+        //cerr << "do not emit " << hex << get<0>(end_ele) << endl;
+    }
 
     cerr << "the kmer list has " << o_buff.size()/2<< " kmers after purging conflicts" << endl;
 
@@ -390,11 +402,11 @@ void display_usage(char *fname){
 	cout << "usage: " << fname << " fpath [fpath ...]\n";
 }
 
-int main(int argc, char** argv){		
+int main(int argc, char** argv){
 	if (argc == 2 && string(argv[1]) == "-h") {
 		display_usage(argv[0]);
 	} else if (argc >= 2) {
-        multi_btc64<uint64_t>(argc, argv);		
+        multi_btc64<uint64_t>(argc, argv);
 	} else if (argc == 1) {
         multi_btc64<uint64_t>();
     } else {
