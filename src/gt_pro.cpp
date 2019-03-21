@@ -119,7 +119,7 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* mmappedData, int channel, char* in_path, char* o_name, int M2, uint64_t MAX_PRESENT){
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int M2, uint64_t MAX_PRESENT){
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
 
@@ -221,9 +221,9 @@ void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* mmapped
 						const auto end = start + (range & MAX_END_MINUS_START);
 
 						for (uint64_t z = start;  z < end;  z += 2) {
-							const auto db_kmer = mmappedData[z];
+							const auto db_kmer = data[z];
 							if (kmer == db_kmer) {
-								const auto db_snp = mmappedData[z + 1];
+								const auto db_snp = data[z + 1];
 								if (footprint.find(db_snp) == footprint.end()) {
 									kmer_matches.push_back(db_snp);
 									footprint.insert({db_snp, 1});
@@ -306,8 +306,10 @@ int main(int argc, char** argv) {
 
 	int n_threads = 1;
 
+	auto preload = false;
+
 	int opt;
-	while ((opt = getopt(argc, argv, "l:m:d:t:o:h")) != -1) {
+	while ((opt = getopt(argc, argv, "pl:m:d:t:o:h")) != -1) {
 		switch (opt) {
 			case 'd':
 				dbflag = true;
@@ -324,6 +326,9 @@ int main(int argc, char** argv) {
 				break;
 			case 'm':
 				M3 = stoi(optarg);
+				break;
+			case 'p':
+				preload = true;
 				break;
 			case 'h': case '?':
 				display_usage(fname);
@@ -420,10 +425,21 @@ int main(int argc, char** argv) {
 
 	uint64_t lmer_count = -1;
 
+	auto data = mmappedData;
+
+	if (preload) {
+		cerr << chrono_time() << ":  Preloading entire DB as requested.  This will increase memory use and slow down init, but makes queries faster." << endl;
+		data = new uint64_t[filesize / 8];
+		for (uint64_t i = 0;  i < filesize / 8;  ++i) {
+			data[i] = mmappedData[i];
+		}
+		cerr << chrono_time() << ":  Preloaded entire DB as requested." << endl;
+	}
+
 	if (!(lmerdbin) || !(dbin)) {
 		lmer_count = filesize ? 1 : 0;
 		for (uint64_t end = 0;  end < filesize / 8;  end += 2) {
-			const auto kmer = mmappedData[end];
+			const auto kmer = data[end];
 			const auto lmer = kmer >> M2;
 			if (!(dbin)) {
 				uint64_t mpres = kmer & MAX_PRESENT;
@@ -471,7 +487,7 @@ int main(int argc, char** argv) {
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmappedData, optind - in_pos, argv[optind], oname, M2, MAX_PRESENT));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, data, optind - in_pos, argv[optind], oname, M2, MAX_PRESENT));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
@@ -501,6 +517,13 @@ int main(int argc, char** argv) {
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
 	close(fd);
+
+	if (preload) {
+		delete data;		
+	}
+
+	delete mmer_present;
+	delete lmer_indx;
 
 	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
