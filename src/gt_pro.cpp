@@ -31,6 +31,8 @@
 #include <fstream>
 #include <thread>
 #include <limits>
+#include <libgen.h>
+#include <regex>
 
 using namespace std;
 
@@ -350,7 +352,7 @@ int main(int argc, char** argv) {
 	const auto MMER_MASK = (LSB << M2) - LSB;
 	const auto MAX_PRESENT = (LSB << M3) - LSB;
 
-	cout << fname << '\t' << db_path << '\t' << n_threads << endl;
+	cout << fname << '\t' << db_path << '\t' << n_threads << "\t" << (preload ? "preload" : "mmap") << "\t" << L2 << "\t" << M3 << endl;
 
 	if (!dbflag) {
 		cout << "missing argument: -d <sckmerdb_path: string>\n";
@@ -379,8 +381,12 @@ int main(int argc, char** argv) {
 	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
 	uint64_t *mmer_present = new uint64_t[(1 + MAX_PRESENT) / 64];  // allocate 1 bit per possible mmer
 
-	const auto OPTIMIZED_DB_MMER_PRESENT = string("optimized_db_mmer_present_") + to_string(M3) + ".bin";
-	const auto OPTIMIZED_DB_LMER_INDX = string("optimized_db_lmer_indx_") + to_string(L2) + ".bin";
+	string dbbase = string(basename(db_path));
+	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
+	dbbase = regex_replace(dbbase, regex("\\."), "_");
+
+	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
+	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_" + to_string(L2) + ".bin";
 
 	FILE* dbin = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "rb");
 	if (dbin) {
@@ -460,7 +466,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	cerr << chrono_time() << ":  " << "Done loading DB of " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
+	cerr << chrono_time() << ":  " << "Done with init for DB with " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	if (!(dbin)) {
 		l_start = chrono_time();
