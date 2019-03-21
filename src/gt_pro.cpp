@@ -46,32 +46,7 @@ constexpr auto BITS_PER_BASE = 2;
 // number of bits to encode entire K-mer
 constexpr auto K2 = BITS_PER_BASE * K;
 
-// Number of bits in the prefix part of the K-mer (also called L-mer,
-// even though it might not correspond to an exact number of bases).
-// This has a substantial effect on memory use.  Rule of thumb for
-// perf is L2 >= K2 - M3.
-constexpr auto L2 = 29;
-
-// Number of bits in the suffix part of the K-mer (also called M-mer,
-// even though it might not correspond to an exact number of DNA bases).
-constexpr auto M2 = K2 - L2;
-
-// Number of bits in the MMER_PRESENT index.  This has a substantial effect
-// on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
-constexpr auto M3 = 36;
-
-static_assert(L2 > 0);
-static_assert(L2 <= 32);
-static_assert(M2 > 0);
-static_assert(M2 < 64);
-static_assert(M3 > 0);
-static_assert(M3 < 64);
-static_assert(L2 >= K2 - M3);
-
 constexpr uint64_t LSB = 1;
-constexpr auto LMER_MASK = (LSB << L2) - LSB;
-constexpr auto MMER_MASK = (LSB << M2) - LSB;
-const auto MAX_PRESENT = (LSB << M3) - LSB;
 
 // Choose appropriately sized integer types to represent offsets into
 // the database.
@@ -144,7 +119,7 @@ long chrono_time() {
 	return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* mmappedData, int channel, char* in_path, char* o_name){
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* mmappedData, int channel, char* in_path, char* o_name, int M2, uint64_t MAX_PRESENT){
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
 
@@ -319,10 +294,20 @@ int main(int argc, char** argv) {
 	char* db_path = (char *)"";
 	char* oname = (char *)"./out";
 
+	// Number of bits in the prefix part of the K-mer (also called L-mer,
+	// even though it might not correspond to an exact number of bases).
+	// This has a substantial effect on memory use.  Rule of thumb for
+	// perf is L2 >= K2 - M3.	
+	auto L2 = 29;
+
+	// Number of bits in the MMER_PRESENT index.  This has a substantial effect
+	// on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
+	auto M3 = 36;
+
 	int n_threads = 1;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "d:t:o:h")) != -1) {
+	while ((opt = getopt(argc, argv, "l:m:d:t:o:h")) != -1) {
 		switch (opt) {
 			case 'd':
 				dbflag = true;
@@ -334,11 +319,31 @@ int main(int argc, char** argv) {
 			case 'o':
 				oname = optarg;
 				break;
+			case 'l':
+				L2 = stoi(optarg);
+				break;
+			case 'm':
+				M3 = stoi(optarg);
+				break;
 			case 'h': case '?':
 				display_usage(fname);
 				exit(1);
 		}	
 	}
+
+	const auto M2 = K2 - L2;
+
+	assert(L2 > 0);
+	assert(L2 <= 32);
+	assert(M2 > 0);
+	assert(M2 < 64);
+	assert(M3 > 0);
+	assert(M3 < 64);
+	assert(L2 >= K2 - M3);
+
+	const auto LMER_MASK = (LSB << L2) - LSB;
+	const auto MMER_MASK = (LSB << M2) - LSB;
+	const auto MAX_PRESENT = (LSB << M3) - LSB;
 
 	cout << fname << '\t' << db_path << '\t' << n_threads << endl;
 
@@ -466,7 +471,7 @@ int main(int argc, char** argv) {
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmappedData, optind - in_pos, argv[optind], oname));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmappedData, optind - in_pos, argv[optind], oname, M2, MAX_PRESENT));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
