@@ -344,6 +344,68 @@ void display_usage(char* fname){
 	cout << "usage: " << fname << " -d <sckmerdb_path: string> -t <n_threads; int; default 1> -o <out_prefix; string; default: cur_dir/out> [-h] input1 [input2 ...]\n";
 }
 
+
+template <class ElementType>
+struct DBIndex {
+
+	std::vector<ElementType> elements;
+	uint64_t expected_element_count;
+	std::string filename;
+	bool loaded;
+
+	DBIndex(const string& filename, const uint64_t expected_element_count=0)
+		: filename(filename),
+		  loaded(false),
+		  expected_element_count(expected_element_count)
+	{}
+
+	ElementType* address() {
+		assert(elements.size() > 0);
+		return &(elements[0]);
+	}
+
+	void allocate_then_load() {
+		assert(!(loaded));
+		FILE* dbin = fopen(filename.c_str(), "rb");
+		if (dbin) {
+			cerr << chrono_time() << ":  Loading " << filename << endl;
+			size_t filesize;
+			if (expected_element_count) {
+				filesize = expected_element_count * sizeof(ElementType);
+			} else {
+				filesize = get_fsize(filename.c_str());
+				expected_element_count = filesize / sizeof(ElementType);
+			}
+			elements.resize(expected_element_count);
+			const auto loaded_element_count = fread(address(), sizeof(ElementType), expected_element_count, dbin);
+			if (loaded_element_count == expected_element_count) {
+				cerr << chrono_time() << ":  Loaded " << filename << endl;
+				loaded = true;
+			} else {
+				cerr << chrono_time() << ":  Failed to load " << filename << ".  This is fine, it will only slow down init." << endl;
+			}
+			fclose(dbin);
+		}
+		if (!(loaded)) {
+			cerr << chrono_time() << ": " << filename << " will be recomputed." << endl;
+			elements.resize(expected_element_count);
+		}
+	}
+
+	void save_if_did_not_exist() {
+		if (!(loaded)) {
+			auto l_start = chrono_time();
+			FILE* dbout = fopen(filename.c_str(), "wb");
+			assert(dbout);
+			const auto saved_element_count = fwrite(address(), sizeof(ElementType), elements.size(), dbout);
+			fclose(dbout);
+			assert(saved_element_count == elements.size());
+			cerr << chrono_time() << ":  Done writing " << filename << ". That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
+		}
+	}
+};
+
+
 int main(int argc, char** argv) {
 	extern char *optarg; 
 	extern int optind;
@@ -436,53 +498,21 @@ int main(int argc, char** argv) {
 	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
 
-	LmerRange *lmer_indx = new LmerRange[1 + LMER_MASK];
-	uint64_t *mmer_present = new uint64_t[(1 + MAX_PRESENT) / 64];  // allocate 1 bit per possible mmer
-
 	string dbbase = string(basename(db_path));
 	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
 	dbbase = regex_replace(dbbase, regex("\\."), "_");
 
 	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
+    DBIndex<uint64_t> db_mmer_present(OPTIMIZED_DB_MMER_PRESENT, (1 + MAX_PRESENT) / 64);  // 1 bit per possible mmer
+	db_mmer_present.allocate_then_load();
+	const bool recompute_mmer_present = !(db_mmer_present.loaded);
+	uint64_t* mmer_present = db_mmer_present.address();
+
 	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_" + to_string(L2) + ".bin";
-
-	FILE* dbin = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "rb");
-	if (dbin) {
-		cerr << chrono_time() << ":  Loading MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << "." << endl;
-		const auto success = fread(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbin);
-		if (success == (1 + MAX_PRESENT) / 64) {
-			cerr << chrono_time() << ":  Loaded MMER_PRESENT from " << OPTIMIZED_DB_MMER_PRESENT << "." << endl;
-			fclose(dbin);
-		} else {
-			cerr << chrono_time() << ":  Failed to load " << OPTIMIZED_DB_MMER_PRESENT << ".  This is fine, it will only slow down init." << endl;
-			fclose(dbin);
-			dbin = NULL;
-		}
-	}
-
-	if (!(dbin)) {
-		cerr << chrono_time() << ":  MMER_PRESENT will be recomputed." << endl;
-		memset(mmer_present, 0, (1 + MAX_PRESENT) / 8);
-	}
-
-	FILE* lmerdbin = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "rb");
-	if (lmerdbin) {
-		cerr << chrono_time() << ":  Loading LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << "." << endl;
-		const auto success = fread(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), lmerdbin);
-		if (success == (1 + LMER_MASK)) {
-			cerr << chrono_time() << ":  Loaded LMER_INDX from " << OPTIMIZED_DB_LMER_INDX << "." << endl;
-			fclose(lmerdbin);
-		} else {
-			cerr << chrono_time() << ":  Failed to load " << OPTIMIZED_DB_LMER_INDX << ".  This is fine, it will only slow down init." << endl;
-			fclose(lmerdbin);
-			lmerdbin = NULL;
-		}
-	}
-
-	if (!(lmerdbin)) {
-		cerr << chrono_time() << ":  LMER_INDX will be recomputed." << endl;
-		memset(lmer_indx, 0, sizeof(LmerRange) * (1 + LMER_MASK));
-	}
+    DBIndex<LmerRange> db_lmer_index(OPTIMIZED_DB_LMER_INDX, 1 + LMER_MASK);
+	db_lmer_index.allocate_then_load();
+	const bool recompute_lmer_indx = !(db_lmer_index.loaded);
+	LmerRange* lmer_indx = db_lmer_index.address();
 
 	uint64_t last_lmer;
 	uint64_t start = 0;
@@ -490,7 +520,6 @@ int main(int argc, char** argv) {
 	uint64_t lmer_count = -1;
 
 	auto data = mmappedData;
-
 	if (preload) {
 		cerr << chrono_time() << ":  Preloading entire DB as requested.  Usually this makes performance worse." << endl;
 		data = new uint64_t[filesize / 8];
@@ -500,12 +529,12 @@ int main(int argc, char** argv) {
 		cerr << chrono_time() << ":  Preloaded entire DB as requested." << endl;
 	}
 
-	if (!(lmerdbin) || !(dbin)) {
+	if (recompute_mmer_present || recompute_lmer_indx) {
 		lmer_count = filesize ? 1 : 0;
 		for (uint64_t end = 0;  end < filesize / 8;  end += 2) {
 			const auto kmer = data[end];
 			const auto lmer = kmer >> M2;
-			if (!(dbin)) {
+			if (recompute_mmer_present) {
 				uint64_t mpres = kmer & MAX_PRESENT;
 				mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
 			}
@@ -517,34 +546,17 @@ int main(int argc, char** argv) {
 			assert(start <= MAX_START);
 			assert(end - start < MAX_END_MINUS_START);
 			assert(lmer <= LMER_MASK);
-			if (!(lmerdbin)) {
-				*((uint64_t*)(&(lmer_indx[lmer]))) = (start << END_MINUS_START_BITS) | (end - start + 1);
+			if (recompute_lmer_indx) {
+				lmer_indx[lmer] = (start << END_MINUS_START_BITS) | (end - start + 1);
 			}
 			last_lmer = lmer;
 		}
 	}
 
+	db_lmer_index.save_if_did_not_exist();
+	db_mmer_present.save_if_did_not_exist();
+
 	cerr << chrono_time() << ":  " << "Done with init for DB with " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
-
-	if (!(dbin)) {
-		l_start = chrono_time();
-		FILE* dbout = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "wb");
-		assert(dbout);
-		const auto success = fwrite(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbout);	
-		fclose(dbout);
-		assert(success == (1 + MAX_PRESENT) / 64);
-		cerr << chrono_time() << ":  Done writing optimized MMER_PRESENT.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
-	}
-
-	if (!(lmerdbin)) {
-		l_start = chrono_time();		
-		FILE* dbout = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "wb");
-		assert(dbout);
-		const auto success = fwrite(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), dbout);	
-		fclose(dbout);
-		assert(success == (1 + LMER_MASK));
-		cerr << chrono_time() << ":  Done writing optimized LMER_INDX with " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
-	}
 
 	l_start = chrono_time();
 
@@ -583,11 +595,8 @@ int main(int argc, char** argv) {
 	close(fd);
 
 	if (preload) {
-		delete data;		
+		delete [] data;
 	}
-
-	delete [] mmer_present;
-	delete [] lmer_indx;
 
 	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
