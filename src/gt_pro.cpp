@@ -36,8 +36,8 @@
 
 using namespace std;
 
-constexpr auto step_size = 256 * 1024 * 1024;
-constexpr auto buffer_size = 256 * 1024 * 1024;
+constexpr auto step_size = 32 * 1024 * 1024;
+constexpr auto buffer_size = 32 * 1024 * 1024;
 
 // The DB k-mers are 31-mers.
 constexpr auto K = 31;
@@ -57,6 +57,11 @@ constexpr auto START_BITS = 48;
 constexpr auto END_MINUS_START_BITS = 64 - START_BITS;
 constexpr auto MAX_START = (LSB << START_BITS) - LSB;
 constexpr auto MAX_END_MINUS_START = (LSB << END_MINUS_START_BITS) - LSB;
+
+// This param is only useful for perf testing.  The setting below, not
+// to exceed 64 TB of RAM, is equivalent to infinity in 2019.
+constexpr auto MAX_MMAP_GB = 64*1024;
+constexpr auto MAX_END = MAX_MMAP_GB * (LSB << 30) / 8;
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
@@ -142,8 +147,8 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 
 	uint64_t n_lines = 0;
 	
-	// Print progress update every 5 million lines.
-	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5*1000*1000;
+	//  Print progress update every 5 million lines.
+	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5 * 1000 * 1000;
 
 	// Reads that contain wildcard characters ('N' or 'n') are split into
 	// tokens at those wildcard characters.  Each token is processed as
@@ -229,9 +234,9 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 						const auto lmer = kmer >> M2;
 						const auto range = lmer_indx[lmer];
 						const auto start = range >> END_MINUS_START_BITS;
-						const auto end = start + (range & MAX_END_MINUS_START);
+						const auto end = min(MAX_END, start + (range & MAX_END_MINUS_START));
 
-						for (uint64_t z = start;  z < end;  z += 2) {							
+						for (uint64_t z = start;  z < end;  z += 2) {
 							const auto db_kmer = data[z];
 							if (kmer == db_kmer) {
 								const auto db_snp = data[z + 1];
@@ -294,37 +299,44 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 
 void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
-	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36}.
+	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
 	bool match = false;
+
 	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 
 	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 
 	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 
 	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 
 	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
 	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+
 	assert(match && "See comment for supporrted values of L and M.");
 }
 
@@ -393,7 +405,7 @@ int main(int argc, char** argv) {
 	assert(M2 < 64);
 	assert(M3 > 0);
 	assert(M3 < 64);
-	assert(L2 >= K2 - M3);
+	//assert(L2 >= K2 - M3);
 
 	const auto LMER_MASK = (LSB << L2) - LSB;
 	const auto MMER_MASK = (LSB << M2) - LSB;
@@ -481,7 +493,7 @@ int main(int argc, char** argv) {
 	auto data = mmappedData;
 
 	if (preload) {
-		cerr << chrono_time() << ":  Preloading entire DB as requested.  This will increase memory use and slow down init, but makes queries faster." << endl;
+		cerr << chrono_time() << ":  Preloading entire DB as requested.  Usually this makes performance worse." << endl;
 		data = new uint64_t[filesize / 8];
 		for (uint64_t i = 0;  i < filesize / 8;  ++i) {
 			data[i] = mmappedData[i];
@@ -575,8 +587,8 @@ int main(int argc, char** argv) {
 		delete data;		
 	}
 
-	delete mmer_present;
-	delete lmer_indx;
+	delete [] mmer_present;
+	delete [] lmer_indx;
 
 	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
