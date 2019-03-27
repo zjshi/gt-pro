@@ -65,7 +65,10 @@ constexpr auto MAX_END = MAX_MMAP_GB * (LSB << 30) / 8;
 
 size_t get_fsize(const char* filename) {
 	struct stat st;
-	stat(filename, &st);
+	if (stat(filename, &st) == -1) {
+		// Probably file not found.
+		return 0;
+	}
 	return st.st_size;
 }
 
@@ -348,52 +351,81 @@ void display_usage(char* fname){
 template <class ElementType>
 struct DBIndex {
 
-	std::vector<ElementType> elements;
-	uint64_t expected_element_count;
 	std::string filename;
-	bool loaded;
+	bool loaded_or_mmapped;
 
 	DBIndex(const string& filename, const uint64_t expected_element_count=0)
 		: filename(filename),
-		  loaded(false),
-		  expected_element_count(expected_element_count)
+		  mmapped_data(NULL),
+		  loaded_or_mmapped(false),
+		  expected_element_count(expected_element_count),
+		  fd(-1),
+		  filesize(0)
 	{}
 
 	ElementType* address() {
+		if (mmapped_data) {
+			return mmapped_data;
+		}
 		assert(elements.size() > 0);
 		return &(elements[0]);
 	}
 
-	void allocate_then_load() {
-		assert(!(loaded));
+	// An alternative to mmap, used when the "-p" (preload) argument is specified.
+	void alloc_then_load() {
+		assert(!(loaded_or_mmapped));
 		FILE* dbin = fopen(filename.c_str(), "rb");
 		if (dbin) {
 			cerr << chrono_time() << ":  Loading " << filename << endl;
-			size_t filesize;
-			if (expected_element_count) {
-				filesize = expected_element_count * sizeof(ElementType);
-			} else {
-				filesize = get_fsize(filename.c_str());
+			filesize = get_fsize(filename.c_str());
+			if (!(expected_element_count)) {
 				expected_element_count = filesize / sizeof(ElementType);
 			}
+			assert(filesize == expected_element_count * sizeof(ElementType));
 			elements.resize(expected_element_count);
 			const auto loaded_element_count = fread(address(), sizeof(ElementType), expected_element_count, dbin);
 			if (loaded_element_count == expected_element_count) {
 				cerr << chrono_time() << ":  Loaded " << filename << endl;
-				loaded = true;
+				loaded_or_mmapped = true;
 			} else {
-				cerr << chrono_time() << ":  Failed to load " << filename << ".  This is fine, it will only slow down init." << endl;
+				cerr << chrono_time() << ":  Failed to load " << filename << ".  This is fine, but init will be slower as we recreate this file." << endl;
 			}
 			fclose(dbin);
 		}
-		if (!(loaded)) {
-			cerr << chrono_time() << ": " << filename << " will be recomputed." << endl;
+		if (!(loaded_or_mmapped)) {
+			elements.resize(expected_element_count);
+		}
+	}
+
+	// Preferred method.
+	void mmap_if_exists_else_alloc() {
+		assert(!(loaded_or_mmapped));
+		assert(!(mmapped_data));
+		filesize = get_fsize(filename.c_str());
+		if (filesize) {
+			if (!(expected_element_count)) {
+				expected_element_count = filesize / sizeof(ElementType);
+			}
+			assert(expected_element_count == filesize / sizeof(ElementType));
+			fd = open(filename.c_str(), O_RDONLY, 0);
+			if (fd != -1) {
+				cerr << chrono_time() << ":  MMAPPING " << filename << endl;
+				auto mmappedData = (ElementType *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
+				if (mmappedData != MAP_FAILED) {
+					mmapped_data = mmappedData;
+					loaded_or_mmapped = true;
+					cerr << chrono_time() << ":  MMAPPED " << filename << endl;
+				}
+			}
+		}
+		if (!(loaded_or_mmapped)) {
+			cerr << chrono_time() << ":  Failed to MMAP " << filename << ".  This is fine, but init will be slower as we recreate this file." << endl;
 			elements.resize(expected_element_count);
 		}
 	}
 
 	void save_if_did_not_exist() {
-		if (!(loaded)) {
+		if (!(loaded_or_mmapped)) {
 			auto l_start = chrono_time();
 			FILE* dbout = fopen(filename.c_str(), "wb");
 			assert(dbout);
@@ -403,6 +435,23 @@ struct DBIndex {
 			cerr << chrono_time() << ":  Done writing " << filename << ". That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 		}
 	}
+
+	~DBIndex() {
+		if (fd != -1) {
+			assert(mmapped_data);
+			assert(loaded_or_mmapped);
+			int rc = munmap(mmapped_data, filesize);
+			assert(rc == 0);
+			close(fd);
+		}
+	}
+
+private:
+	std::vector<ElementType> elements;	
+	ElementType* mmapped_data;
+	uint64_t expected_element_count;
+	int fd;
+	uint64_t filesize;
 };
 
 
@@ -502,16 +551,28 @@ int main(int argc, char** argv) {
 	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
 	dbbase = regex_replace(dbbase, regex("\\."), "_");
 
+	if (preload) {
+		cerr << chrono_time() << ":  DB indexes will be preloaded." << endl;
+	}
+
 	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
     DBIndex<uint64_t> db_mmer_present(OPTIMIZED_DB_MMER_PRESENT, (1 + MAX_PRESENT) / 64);  // 1 bit per possible mmer
-	db_mmer_present.allocate_then_load();
-	const bool recompute_mmer_present = !(db_mmer_present.loaded);
+	if (preload) {
+		db_mmer_present.alloc_then_load();
+	} else {		
+		db_mmer_present.mmap_if_exists_else_alloc();
+	}
+	const bool recompute_mmer_present = !(db_mmer_present.loaded_or_mmapped);
 	uint64_t* mmer_present = db_mmer_present.address();
 
 	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_" + to_string(L2) + ".bin";
     DBIndex<LmerRange> db_lmer_index(OPTIMIZED_DB_LMER_INDX, 1 + LMER_MASK);
-	db_lmer_index.allocate_then_load();
-	const bool recompute_lmer_indx = !(db_lmer_index.loaded);
+	if (preload) {
+		db_lmer_index.alloc_then_load();
+	} else {
+		db_lmer_index.mmap_if_exists_else_alloc();
+	}
+	const bool recompute_lmer_indx = !(db_lmer_index.loaded_or_mmapped);
 	LmerRange* lmer_indx = db_lmer_index.address();
 
 	uint64_t last_lmer;
@@ -520,14 +581,6 @@ int main(int argc, char** argv) {
 	uint64_t lmer_count = -1;
 
 	auto data = mmappedData;
-	if (preload) {
-		cerr << chrono_time() << ":  Preloading entire DB as requested.  Usually this makes performance worse." << endl;
-		data = new uint64_t[filesize / 8];
-		for (uint64_t i = 0;  i < filesize / 8;  ++i) {
-			data[i] = mmappedData[i];
-		}
-		cerr << chrono_time() << ":  Preloaded entire DB as requested." << endl;
-	}
 
 	if (recompute_mmer_present || recompute_lmer_indx) {
 		lmer_count = filesize ? 1 : 0;
@@ -593,10 +646,6 @@ int main(int argc, char** argv) {
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
 	close(fd);
-
-	if (preload) {
-		delete [] data;
-	}
 
 	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
