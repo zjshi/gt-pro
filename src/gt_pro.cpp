@@ -54,9 +54,9 @@ constexpr uint64_t LSB = 1;
 // the database.
 using LmerRange = uint64_t;
 constexpr auto START_BITS = 48;
-constexpr auto END_MINUS_START_BITS = 64 - START_BITS;
+constexpr auto LEN_BITS = 64 - START_BITS;
 constexpr auto MAX_START = (LSB << START_BITS) - LSB;
-constexpr auto MAX_END_MINUS_START = (LSB << END_MINUS_START_BITS) - LSB;
+constexpr auto MAX_LEN = (LSB << LEN_BITS) - LSB;
 
 // This param is only useful for perf testing.  The setting below, not
 // to exceed 64 TB of RAM, is equivalent to infinity in 2019.
@@ -130,7 +130,7 @@ long chrono_time() {
 }
 
 template <int M2, int M3>
-bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int aM2, int aM3){
+bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_index, int channel, char* in_path, char* o_name, int aM2, int aM3) {
 
 	if (aM2 != M2 || aM3 != M3) {
 		return false;
@@ -234,20 +234,21 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 
 					if (mpres & 1) {
 						const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
-						const auto lmer = kmer >> M2;
+						const uint32_t lmer = kmer >> M2;
+						const uint32_t mmer = kmer; // FIXME, requires M2=32
 						const auto range = lmer_indx[lmer];
-						const auto start = range >> END_MINUS_START_BITS;
-						const auto end = min(MAX_END, start + (range & MAX_END_MINUS_START));
+						const auto start = range >> LEN_BITS;
+						const auto end = min(MAX_END, start + (range & MAX_LEN));
 
-						for (uint64_t z = start;  z < end;  z += 2) {
-							const auto db_kmer = data[z];
-							if (kmer == db_kmer) {
-								const auto db_snp = data[z + 1];
-								if (footprint.find(db_snp) == footprint.end()) {
-									kmer_matches.push_back(db_snp);
-									footprint.insert({db_snp, 1});
+						for (uint64_t z = start;  z < end;  ++z) {
+							const auto db_mmer = mmers[z];
+							if (mmer == db_mmer) {
+								const auto snp_id = snps[z];
+								if (footprint.find(snp_id) == footprint.end()) {
+									kmer_matches.push_back(snp_id);
+									footprint.insert({snp_id, 1});
 								}
-							} else if (kmer < db_kmer) {
+							} else if (mmer < db_mmer) {
 								break;
 							}
 						}
@@ -276,19 +277,22 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 	if (kmer_matches.size() == 0) {
 		cerr << chrono_time() << ":  " << "zero hits" << endl;	
 	} else {
+		for (int i=0;  i<kmer_matches.size();  ++i) {
+			kmer_matches[i] = snps_index[kmer_matches[i]];
+		}
 		sort(kmer_matches.begin(), kmer_matches.end());
-
+		// FIXME.  The loop below doesn't output the last SNP.
+		// Also the counts may be off by 1.
 		uint64_t cur_count = 0;
-		uint64_t cur_snp = kmer_matches[0];
-		for(auto it = kmer_matches.begin(); it != kmer_matches.end(); it=it+1){
-			if (*it != cur_snp) {
+		uint64_t cur_snp = kmer_matches[0];		
+		for (auto it : kmer_matches) {
+			if (it != cur_snp) {
 				fh << cur_snp << '\t' << cur_count << '\n';
-				cur_snp = *it;
+				cur_snp = it;
 				cur_count = 1;
 			} else {
 				++cur_count;
 			}
-
 			// seq_decode(dcd_buf, k, it->first, code_dict, b_mask);
 			// fh << *it << "\t" << *(it+1) << "\n";
 		}
@@ -300,45 +304,45 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 	return true;
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* data, int channel, char* in_path, char* o_name, int M2, const int M3) {
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_index, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
 	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
 	bool match = false;
 
-	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 37>(lmer_indx, mmer_present, data, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
 
 	assert(match && "See comment for supporrted values of L and M.");
 }
@@ -351,7 +355,7 @@ void display_usage(char* fname){
 template <class ElementType>
 struct DBIndex {
 
-	std::string filename;
+	string filename;
 	bool loaded_or_mmapped;
 
 	DBIndex(const string& filename, const uint64_t expected_element_count=0)
@@ -371,69 +375,45 @@ struct DBIndex {
 		return &(elements[0]);
 	}
 
-	// An alternative to mmap, used when the "-p" (preload) argument is specified.
-	void alloc_then_load() {
-		assert(!(loaded_or_mmapped));
-		FILE* dbin = fopen(filename.c_str(), "rb");
-		if (dbin) {
-			cerr << chrono_time() << ":  Loading " << filename << endl;
-			filesize = get_fsize(filename.c_str());
-			if (!(expected_element_count)) {
-				expected_element_count = filesize / sizeof(ElementType);
-			}
-			assert(filesize == expected_element_count * sizeof(ElementType));
-			elements.resize(expected_element_count);
-			const auto loaded_element_count = fread(address(), sizeof(ElementType), expected_element_count, dbin);
-			if (loaded_element_count == expected_element_count) {
-				cerr << chrono_time() << ":  Loaded " << filename << endl;
-				loaded_or_mmapped = true;
-			} else {
-				cerr << chrono_time() << ":  Failed to load " << filename << ".  This is fine, but init will be slower as we recreate this file." << endl;
-			}
-			fclose(dbin);
-		}
-		if (!(loaded_or_mmapped)) {
-			elements.resize(expected_element_count);
-		}
+	vector<ElementType>* getElementsVector() {
+		return &(elements);
 	}
 
-	// Preferred method.
-	void mmap_if_exists_else_alloc() {
+	// If file exists and nonempty, preload or mmap depending on argument, and return false.
+	// If file is missing or empty, allocate space in elements array and return true.
+	bool mmap_or_load(const bool preload = false) {
 		assert(!(loaded_or_mmapped));
-		assert(!(mmapped_data));
 		filesize = get_fsize(filename.c_str());
 		if (filesize) {
 			if (!(expected_element_count)) {
 				expected_element_count = filesize / sizeof(ElementType);
 			}
-			assert(expected_element_count == filesize / sizeof(ElementType));
-			fd = open(filename.c_str(), O_RDONLY, 0);
-			if (fd != -1) {
-				cerr << chrono_time() << ":  MMAPPING " << filename << endl;
-				auto mmappedData = (ElementType *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
-				if (mmappedData != MAP_FAILED) {
-					mmapped_data = mmappedData;
-					loaded_or_mmapped = true;
-					cerr << chrono_time() << ":  MMAPPED " << filename << endl;
-				}
+			assert(filesize == expected_element_count * sizeof(ElementType));
+			if (preload) {
+				load();
+			} else {
+				MMAP();
 			}
 		}
-		if (!(loaded_or_mmapped)) {
-			cerr << chrono_time() << ":  Failed to MMAP " << filename << ".  This is fine, but init will be slower as we recreate this file." << endl;
-			elements.resize(expected_element_count);
+		if (loaded_or_mmapped) {
+			// Does not need to be recomputed.
+			return false;
 		}
+		cerr << chrono_time() << ":  Failed to MMAP or preload " << filename << ".  This is fine, but init will be slower as we recreate this file." << endl;
+		elements.resize(expected_element_count);
+		// needs to be recomputed
+		return true;
 	}
 
-	void save_if_did_not_exist() {
-		if (!(loaded_or_mmapped)) {
-			auto l_start = chrono_time();
-			FILE* dbout = fopen(filename.c_str(), "wb");
-			assert(dbout);
-			const auto saved_element_count = fwrite(address(), sizeof(ElementType), elements.size(), dbout);
-			fclose(dbout);
-			assert(saved_element_count == elements.size());
-			cerr << chrono_time() << ":  Done writing " << filename << ". That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
-		}
+	void save() {
+		assert(!(loaded_or_mmapped));
+		auto l_start = chrono_time();
+		FILE* dbout = fopen(filename.c_str(), "wb");
+		assert(dbout);
+		const auto saved_element_count = fwrite(address(), sizeof(ElementType), elements.size(), dbout);
+		fclose(dbout);
+		assert(saved_element_count == elements.size());
+		cerr << chrono_time() << ":  Done writing " << filename << ". That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 	}
 
 	~DBIndex() {
@@ -447,11 +427,38 @@ struct DBIndex {
 	}
 
 private:
-	std::vector<ElementType> elements;	
+	vector<ElementType> elements;	
 	ElementType* mmapped_data;
 	uint64_t expected_element_count;
 	int fd;
 	uint64_t filesize;
+
+	void load() {
+		FILE* dbin = fopen(filename.c_str(), "rb");
+		if (dbin) {
+			cerr << chrono_time() << ":  Loading " << filename << endl;
+			elements.resize(expected_element_count);
+			const auto loaded_element_count = fread(address(), sizeof(ElementType), expected_element_count, dbin);
+			if (loaded_element_count == expected_element_count) {
+				cerr << chrono_time() << ":  Loaded " << filename << endl;
+				loaded_or_mmapped = true;
+			}
+			fclose(dbin);
+		}
+	}
+
+	void MMAP() {
+		fd = open(filename.c_str(), O_RDONLY, 0);
+		if (fd != -1) {
+			cerr << chrono_time() << ":  MMAPPING " << filename << endl;
+			auto mmappedData = (ElementType *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
+			if (mmappedData != MAP_FAILED) {
+				mmapped_data = mmappedData;
+				loaded_or_mmapped = true;
+				cerr << chrono_time() << ":  MMAPPED " << filename << endl;
+			}
+		}
+	}
 };
 
 
@@ -518,6 +525,10 @@ int main(int argc, char** argv) {
 	assert(M3 < 64);
 	//assert(L2 >= K2 - M3);
 
+	// FIXME this is just for now
+	assert(L2 == 30 &&  "Sorry, for now only -l 30 is supported." );
+	assert(M2 == 32);
+
 	const auto LMER_MASK = (LSB << L2) - LSB;
 	const auto MMER_MASK = (LSB << M2) - LSB;
 	const auto MAX_PRESENT = (LSB << M3) - LSB;
@@ -540,12 +551,7 @@ int main(int argc, char** argv) {
 	auto l_start = chrono_time();
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
-	size_t filesize = get_fsize(db_path);
-	//Open file
-	int fd = open(db_path, O_RDONLY, 0);
-	assert(fd != -1);
-	uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
-	assert(mmappedData != MAP_FAILED);
+	size_t db_filesize = get_fsize(db_path);
 
 	string dbbase = string(basename(db_path));
 	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
@@ -557,66 +563,113 @@ int main(int argc, char** argv) {
 
 	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
     DBIndex<uint64_t> db_mmer_present(OPTIMIZED_DB_MMER_PRESENT, (1 + MAX_PRESENT) / 64);  // 1 bit per possible mmer
-	if (preload) {
-		db_mmer_present.alloc_then_load();
-	} else {		
-		db_mmer_present.mmap_if_exists_else_alloc();
-	}
-	const bool recompute_mmer_present = !(db_mmer_present.loaded_or_mmapped);
+	const bool recompute_mmer_present = db_mmer_present.mmap_or_load(preload);
 	uint64_t* mmer_present = db_mmer_present.address();
 
-	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_" + to_string(L2) + ".bin";
+	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_v2_" + to_string(L2) + ".bin";
     DBIndex<LmerRange> db_lmer_index(OPTIMIZED_DB_LMER_INDX, 1 + LMER_MASK);
-	if (preload) {
-		db_lmer_index.alloc_then_load();
-	} else {
-		db_lmer_index.mmap_if_exists_else_alloc();
-	}
-	const bool recompute_lmer_indx = !(db_lmer_index.loaded_or_mmapped);
+	const bool recompute_lmer_indx = db_lmer_index.mmap_or_load(preload);
 	LmerRange* lmer_indx = db_lmer_index.address();
+
+	const auto OPTIMIZED_DB_MMERS = dbbase + "_optimized_db_mmers_" + to_string(M2) + ".bin";
+	DBIndex<uint32_t> db_mmers(OPTIMIZED_DB_MMERS, db_filesize / 16);
+	const auto recompute_mmers = db_mmers.mmap_or_load(preload);
+	uint32_t* mmers = db_mmers.address();
+
+	const auto OPTIMIZED_DB_SNPS = dbbase + "_optimized_db_snps.bin";
+	DBIndex<uint32_t> db_snps(OPTIMIZED_DB_SNPS, db_filesize / 16);
+	const bool recompute_snps = db_snps.mmap_or_load(preload);
+	uint32_t* snps = db_snps.address();
+
+	const auto OPTIMIZED_DB_SNPS_INDEX = dbbase + "_optimized_db_snps_index.bin";
+	DBIndex<uint64_t> db_snps_index(OPTIMIZED_DB_SNPS_INDEX);
+	const bool recompute_snps_index = db_snps_index.mmap_or_load(preload);
+	vector<uint64_t>& snps_index = *db_snps_index.getElementsVector();
 
 	uint64_t last_lmer;
 	uint64_t start = 0;
 
 	uint64_t lmer_count = -1;
 
-	auto data = mmappedData;
+	int fd = -1;
+	uint64_t* db_data = NULL;
 
-	if (recompute_mmer_present || recompute_lmer_indx) {
-		lmer_count = filesize ? 1 : 0;
-		for (uint64_t end = 0;  end < filesize / 8;  end += 2) {
-			const auto kmer = data[end];
+	if (recompute_mmer_present || recompute_lmer_indx || recompute_mmers || recompute_snps || recompute_snps_index) {
+		//Open file
+		fd = open(db_path, O_RDONLY, 0);
+		assert(fd != -1);
+		db_data = (uint64_t *) mmap(NULL, db_filesize, PROT_READ, MMAP_FLAGS, fd, 0);
+		assert(db_data != MAP_FAILED);
+		unordered_map<uint64_t, uint32_t> snps_map;
+		lmer_count = db_filesize ? 1 : 0;
+		for (uint64_t end = 0;  end < db_filesize / 8;  end += 2) {
+			const auto kmer = db_data[end];
 			const auto lmer = kmer >> M2;
 			if (recompute_mmer_present) {
 				uint64_t mpres = kmer & MAX_PRESENT;
 				mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
 			}
+			if (recompute_mmers) {
+				assert(M2 == 32);
+				mmers[end / 2] = kmer;  // the 32 lsbs
+			}
+			if (recompute_snps || recompute_snps_index) {
+				const auto snp = db_data[end + 1];
+				const auto map_entry = snps_map.find(snp);
+				uint32_t snp_id;
+				if (map_entry == snps_map.end()) {
+					snp_id = snps_index.size();
+					snps_index.push_back(snp);
+					snps_map.insert({snp, snp_id});
+				} else {
+					snp_id = map_entry->second;
+				}
+				snps[end / 2] = snp_id;
+			}
 			if (end > 0 && lmer != last_lmer) {
-				start = end;
+				start = end / 2;
 				++lmer_count;
 			}
 			// Invariant:  The data loaded so far for lmer reside at offsets start, start+1, ..., end-1.
 			assert(start <= MAX_START);
-			assert(end - start < MAX_END_MINUS_START);
+			const auto len = (end / 2) - start + 1;
+			assert(len < MAX_LEN);
 			assert(lmer <= LMER_MASK);
 			if (recompute_lmer_indx) {
-				lmer_indx[lmer] = (start << END_MINUS_START_BITS) | (end - start + 1);
+				lmer_indx[lmer] = (start << LEN_BITS) | len;
 			}
 			last_lmer = lmer;
 		}
 	}
 
-	db_lmer_index.save_if_did_not_exist();
-	db_mmer_present.save_if_did_not_exist();
+	if (recompute_lmer_indx) {
+		db_lmer_index.save();
+	}
 
-	cerr << chrono_time() << ":  " << "Done with init for DB with " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
+	if (recompute_mmer_present) {
+		db_mmer_present.save();
+	}
+
+	if (recompute_mmers) {
+		db_mmers.save();
+	}
+
+	if (recompute_snps) {
+		db_snps.save();
+	}
+
+	if (recompute_snps_index) {
+		db_snps_index.save();
+	}
+
+	cerr << chrono_time() << ":  " << "Done with init for DB with " << (db_filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	l_start = chrono_time();
 
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, data, optind - in_pos, argv[optind], oname, M2, M3));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmers, snps, db_snps_index.address(), optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
@@ -643,9 +696,11 @@ int main(int argc, char** argv) {
 		th_array.clear();
 	}
 
-	int rc = munmap(mmappedData, filesize);
-	assert(rc == 0);
-	close(fd);
+	if (fd != -1 && db_data != NULL) {
+		int rc = munmap(db_data, db_filesize);
+		assert(rc == 0);
+		close(fd);
+	}
 
 	cerr << chrono_time() << ":  " << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."  << endl;
 
