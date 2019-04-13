@@ -12,29 +12,15 @@
 
 using namespace std;
 
-
-// this program scans its input (fastq text stream) for forward k mers,
-
-// usage:
-//    g++ -O3 --std=c++11 -o vfkmrz_bunion vfkmrz_bunion.cpp
-//    ./vfkmrz_bunion -k1 </path/to/kmer_list1> -k2 </path/to/kmer_list2>
-//
-// standard fastq format only for input, otherwise failure is almost guaranteed. 
-
 // global variable declaration starts here
-constexpr auto k = 31;
-
-// set operation mode
-// valid values: 0, 1, 2
-// 0 is set union operation; 1 is set intersection operation; 2 is set difference([set1-set2]);
-constexpr auto s_mod = 0;
+constexpr auto K = 31;
 
 // parameters for <unistd.h> file read; from the source of GNU coreutils wc
-constexpr auto step_size = 256 * 1024 * 1024;
-constexpr auto buffer_size = 256 * 1024 * 1024;
+constexpr auto STEP_SIZE = 256 * 1024 * 1024;
+constexpr auto BUFFER_SIZE = 256 * 1024 * 1024;
 
 // output file path
-constexpr auto out_path = "/dev/stdout";
+constexpr auto OUT_PATH = "/dev/stdout";
 
 // get time elapsed since when it all began in milliseconds.
 long chrono_time() {
@@ -42,8 +28,7 @@ long chrono_time() {
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-// number of bits per single nucleotide base
-constexpr int bpb = 2;
+constexpr int BITS_PER_BASE = 2;
 
 template <class int_type>
 int_type bit_encode(const char c) {
@@ -53,355 +38,226 @@ int_type bit_encode(const char c) {
     case 'G': return 2;
     case 'T': return 3;
     }
-
     assert(false);
 }
 
-
 template <class int_type>
-char bit_decode(const int_type bit_code) {
-    switch (bit_code) {
-    case 0: return 'A';
-    case 1: return 'C';
-    case 2: return 'G';
-    case 3: return 'T';
+vector<int_type> new_code_dict() {
+
+    constexpr auto CHAR_LIMIT = 1 << (sizeof(char) * 8);
+    vector<int_type> code_dict;
+    for (uint64_t c = 0; c < CHAR_LIMIT; ++c) {
+        // This helps us detect non-nucleotide characters on encoding.
+        code_dict.push_back(-1);
     }
-    assert(false);
+
+    code_dict['A'] = code_dict['a'] = bit_encode<int_type>('A');
+    code_dict['C'] = code_dict['c'] = bit_encode<int_type>('C');
+    code_dict['G'] = code_dict['g'] = bit_encode<int_type>('G');
+    code_dict['T'] = code_dict['t'] = bit_encode<int_type>('T');
+
+    return code_dict;
 }
 
-template <class int_type>
-void make_code_dict(int_type* code_dict) {
-    code_dict['A'] = bit_encode<int_type>('A');
-    code_dict['C'] = bit_encode<int_type>('C');
-    code_dict['G'] = bit_encode<int_type>('G');
-    code_dict['T'] = bit_encode<int_type>('T');
-}
-
-template <class int_type>
-int_type seq_encode(const char* buf, int len, const int_type* code_dict, const int_type b_mask) {
+template <class int_type, int len>
+int_type seq_encode(const char* buf, const int_type* code_dict, const int_type b_mask) {
     int_type seq_code = 0;
     for (int i=0;  i < len;  ++i) {
         const int_type b_code = code_dict[buf[i]];
-        seq_code |= ((b_code & b_mask) << (bpb * (len - i - 1)));
+        assert(b_code != -1 && "Trying to encode a character that is not ACTG or actg.");
+        seq_code |= ((b_code & b_mask) << (BITS_PER_BASE * (len - i - 1)));
     }
     return seq_code;
 }
 
-template <class int_type>
-void seq_decode(char* buf, const int len, const int_type seq_code, int_type* code_dict, const int_type b_mask) {
-    for (int i=0;  i < len-1;  ++i) {
-        const int_type b_code = (seq_code >> (bpb * (len - i - 2))) & b_mask;
-        buf[i] = bit_decode<int_type>(b_code);
+bool is_numeric(char* str) {
+    while (isdigit(*str)) {
+        ++str;
     }
-
-    buf[len-1] = '\0';
+    return *str == '\0';
 }
 
-
 template <class int_type>
-void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, int_type>>& k_vec, const int_type* code_dict, const int_type b_mask) {
+void bit_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec, const int_type* code_dict, const int_type b_mask) {
+
+    assert(k_path);
+    cerr << "Loading file " << k_path << "." << endl;
+
+    FILE *fp = fopen(k_path, "r");
+    if (fp == NULL) {
+        cerr << "Trouble opening file " << k_path << "." << endl;
+        exit(EXIT_FAILURE);
+    }
+
+    // The getline function (re)allocates memory for the line as needed.
+    char *line = NULL;
+    size_t buf_size = 0;
+    ssize_t line_len;
     auto t_start = chrono_time();
 
-    char* window = buffer.data();
-
-    uintmax_t n_lines = 0;
-
-    int fd;
-    fd = open(k_path, O_RDONLY);
-
-    int cur_pos = 0;
-    int snp_pos = 0;
-
-    char seq_buf[k];
-	char snp_id[16];
-
-    //auto fh = fstream(out_path, ios::out | ios::binary);
-
-	bool id_switch = false;
-    bool has_wildcard = false;
-
-    while (true) {
-
-        const ssize_t bytes_read = read(fd, window, step_size);
-
-        if (bytes_read == 0)
-            break;
-
-        if (bytes_read == (ssize_t) -1) {
-            cerr << "unknown fetal error when reading " << k_path << endl;
-            exit(EXIT_FAILURE);
+    while ((line_len = getline(&line, &buf_size, fp)) != -1) {
+        // A line of line_len characters has been read.   Squash the terminating \n, if present.
+        if (line_len >= 1 && line[line_len - 1] == '\n') {
+            line[line_len - 1] = '\0';
         }
-
-        for (int i = 0;  i < bytes_read;  ++i) {
-            char c = toupper(window[i]);
-            if (c == '\n') {
-                ++n_lines;
-
-                if (has_wildcard) {
-                    has_wildcard = false;
-                    continue;    
-                }
-
-                auto code = seq_encode<int_type>(seq_buf, k, code_dict, b_mask);
-
-				snp_id[snp_pos] = '\0';
-				int_type id_int = stoull(snp_id);
-
-                k_vec.push_back(tuple<int_type, int_type>(code, id_int));
-
-                cur_pos = 0;
-				snp_pos = 0;
-
-				id_switch = false;
-            } else if (c == '\t'){
-				id_switch = true;
-			} else {
-                if (c == 'N') {
-                    has_wildcard = true;    
-                }
-
-				if (id_switch) {
-					snp_id[snp_pos++] = c;	
-				} else {
-					seq_buf[cur_pos++] = c;
-				}
+        char *first_tab;
+        char *second_tab;
+        int_type kmer;
+        unsigned int snp_offset;
+        int_type snp;
+        bool has_wildcard;
+        // Parse first column: the K-mer.
+        {
+            // Identify extents of first_column, and make first_column into a 0-terminated string.
+            char *first_column = line;  // note: getline may move line to a different address in each iteration of this loop
+            first_tab = index(first_column, '\t');
+            assert(first_tab && ((first_tab - first_column) == K) && "First column needs to be a K-mer (contain exactly K characters).");
+            *first_tab = '\0';  // now first_column is a 0-terminated string.
+            has_wildcard = index(first_column, 'N') || index(first_column, 'n');
+            // This now supports both lowercase and uppercase ACTG characters.
+            if (!(has_wildcard)) {
+                kmer = seq_encode<int_type, K>(first_column, code_dict, b_mask);
             }
         }
+        // Parse second column: the snp offset within the K-mer (integer range 0..K-1).
+        {
+            char * second_column = first_tab + 1;
+            second_tab = index(second_column, '\t');
+            assert(second_tab && "Line must contain exactly 3 columns.");
+            *second_tab = '\0';  // now second_column is a 0-terminated string.
+            assert(is_numeric(second_column) && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+            assert(strlen(second_column) <= 5 && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+            snp_offset = strtoul(second_column, NULL, 10);
+            assert(snp_offset >= 0 && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+            assert(snp_offset < K && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+        }
+        // Parse third and last column: decimal literal encoding species, major/minor allele, and genomic position of SNP.
+        {
+            char* third_column = second_tab + 1;
+            assert(is_numeric(third_column) && "Third and last column needs to be decimal literal with at most 16 digits.");
+            assert(strlen(third_column) <= 16 && "Third and last column needs to be decimal literal with at most 16 digits.");
+            snp = strtoull(third_column, NULL, 10);
+        }
+        // Finally, emit the (kmer, snp) pair.  The snp_offset is still ignored at the moment.
+        if (!(has_wildcard)) {
+            k_vec.push_back(tuple<int_type, int_type>(kmer, snp));
+        }
+    }
+    // Done parsing file.
+    free(line);
+    cerr << "Loaded file " << k_path << " in " << (chrono_time() - t_start) / 1000 << " secs." << endl;
+}
 
-        //fh.write(&kmers[0], kmers.size());
+template <class int_type>
+int_type get_kmer(const tuple<int_type, int_type>& kmer_snp) {
+    return get<0>(kmer_snp);
+}
 
-        // cerr << n_lines << " lines were scanned after " << (chrono_time() - t_start) / 1000 << " seconds" << endl;
+template <class int_type>
+int_type get_snp(const tuple<int_type, int_type>& kmer_snp) {
+    return get<1>(kmer_snp);
+}
+
+template <class int_type>
+int_type get_species(const tuple<int_type, int_type>& kmer_snp) {
+    return stoi(to_string(get_snp(kmer_snp)).substr(0, 6));
+}
+
+template <class int_type>
+void multi_btc64(int n_path, char** kpaths) {
+    int_type lsb = 1;
+    int_type b_mask = (lsb << BITS_PER_BASE) - lsb;
+
+    auto code_dict = new_code_dict<int_type>();
+
+    vector<tuple<int_type, int_type>> kdb;
+    vector<char> buffer(BUFFER_SIZE);
+
+    if (n_path == 0) {
+        cerr << "No paths specified on command line --> will read from /dev/stdin." << endl;
+        n_path = 1;
+        char* stdin = "/dev/stdin";
+        kpaths = &stdin;
     }
 
     auto timeit = chrono_time();
-}
 
+    for (int i = 0; i < n_path; ++i) {
+        bit_load<int_type>(kpaths[i], kdb, code_dict.data(), b_mask);
+    }
+    cerr << "Loaded all files! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
+    cerr << "The unfiltered kmer list has " << kdb.size() << " kmers" << endl;
 
-template <class int_type>
-void bit_load(vector<char>& buffer, vector<tuple<int_type, int_type>>& k_vec, const int_type* code_dict, const int_type b_mask) {
-    auto t_start = chrono_time();
+    timeit = chrono_time();
 
-    char* window = buffer.data();
+    sort(kdb.begin(), kdb.end());
+    cerr << "Sorting done! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
 
-    uintmax_t n_lines = 0;
+    char seq_buf[K + 1];
 
-    int cur_pos = 0;
-    int snp_pos = 0;
+    uint64_t multispecies_kmers = 0;
+    uint64_t multispecies_unique_kmers = 0;
+    uint64_t monospecies_kmers = 0;
+    uint64_t monospecies_unique_kmers = 0;
 
-    char seq_buf[k];
-	char snp_id[16];
+    vector<int_type> o_buff;
 
-    //auto fh = fstream(out_path, ios::out | ios::binary);
+    cerr << "Starting to check conflicts:  Will filter out kmers that occur in multiple species." << endl;
 
-	bool id_switch = false;
-    bool has_wildcard = false;
+    timeit = chrono_time();
 
-    while (true) {
-
-        const ssize_t bytes_read = read(STDIN_FILENO, window, step_size);
-
-        if (bytes_read == 0)
-            break;
-
-        if (bytes_read == (ssize_t) -1) {
-            cerr << "unknown fetal error when reading from stdin" << endl;
-            exit(EXIT_FAILURE);
+    // Scroll through kdb, choosing whether to emit or drop a kmer depending on whether all hits
+    // from that kmer are to the same species or to multiple species.
+    auto current = kdb.begin();
+    while (current != kdb.end()) {
+        // Scan forward over all hits from the current kmer value.  Are all those hits to the same species?
+        const auto kmer = get_kmer(*current);
+        const auto species = get_species(*current);
+        bool kmer_is_monospecific = true;
+        auto next = current + 1;
+        while (next != kdb.end() && get_kmer(*next) == kmer) {
+            kmer_is_monospecific = kmer_is_monospecific && (get_species(*next) == species);
+            ++next;
         }
-
-        for (int i = 0;  i < bytes_read;  ++i) {
-            char c = toupper(window[i]);
-            if (c == '\n') {
-                ++n_lines;
-
-                if (has_wildcard) {
-                    has_wildcard = false;
-                    continue;    
-                }
-
-                auto code = seq_encode<int_type>(seq_buf, k, code_dict, b_mask);
-
-				snp_id[snp_pos] = '\0';
-				int_type id_int = stoull(snp_id);
-
-                k_vec.push_back(tuple<int_type, int_type>(code, id_int));
-
-                cur_pos = 0;
-				snp_pos = 0;
-				id_switch = false;
-            } else if (c == '\t'){
-				id_switch = true;
-			} else {
-                if (c == 'N') {
-                    has_wildcard = true;    
-                }
-
-				if (id_switch) {
-					snp_id[snp_pos++] = c;	
-				} else {
-					seq_buf[cur_pos++] = c;
-				}
+        if (kmer_is_monospecific) {
+            // Every snp for this kmer is from the same species.  Emit.
+            for (auto kmer_snp = current;  kmer_snp != next;  ++kmer_snp) {
+                assert(get_kmer(*kmer_snp) == kmer);
+                o_buff.push_back(kmer);
+                o_buff.push_back(get_snp(*kmer_snp));
             }
+            // Count stats.
+            monospecies_kmers += (next - current);
+            ++monospecies_unique_kmers;
+        } else {
+            // The current kmer hits multiple species.  Suppress.
+            // Just count some stats.
+            multispecies_kmers += (next - current);
+            ++multispecies_unique_kmers;
         }
-
-        //fh.write(&kmers[0], kmers.size());
-
-        // cerr << n_lines << " lines were scanned after " << (chrono_time() - t_start) / 1000 << " seconds" << endl;
+        current = next;
     }
 
-    auto timeit = chrono_time();
-}
+    cerr << "Filtering done! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
+    cerr << "The filtered kmer list has " << o_buff.size()/2<< " kmers after purging conflicts." << endl;
+    cerr << "Monospecies kmers: " <<  monospecies_kmers << " (" << monospecies_unique_kmers << " unique)." << endl;
+    cerr << "Multispecies kmers: " <<  multispecies_kmers << " (" << multispecies_unique_kmers << " unique)." << endl;
 
-template <class int_type>
-bool cmp_tuple(const tuple<int_type, int_type> &a, const tuple<int_type, int_type> &b){
-	return get<0>(a) < get<0>(b);
-}
-
-template <class int_type>
-void multi_btc64() {	
-    int_type lsb = 1;
-    int_type b_mask = (lsb << bpb) - lsb;
-
-    int_type code_dict[1 << (sizeof(char) * 8)];
-    make_code_dict<int_type>(code_dict);
-
-    vector<tuple<int_type, int_type>> kdb;
-    vector<char> buffer(buffer_size);
-
-    bit_load<int_type>(buffer, kdb, code_dict, b_mask);	
-
-    auto timeit = chrono_time();
-    sort(kdb.begin(), kdb.end(), cmp_tuple<int_type>);
-    // typename vector<int_type>::iterator ip = unique(kdb.begin(), kdb.end());
-    // kdb.resize(std::distance(kdb.begin(), ip));
-    cerr << "Done!\n" << "It takes " << (chrono_time() - timeit) / 1000 << " secs" << endl;
-    cerr << "the kmer list has " << kdb.size() << " kmers" << endl;
-
-    // char seq_buf[k+1];
-	
-	vector<int_type> o_buff;
-
-    ofstream fh(out_path, ofstream::out | ofstream::binary);
-
-    for (auto it = kdb.begin(); it != kdb.end(); ++it) {
-        // seq_decode(seq_buf, k+1, *it, code_dict, b_mask);    
-        // fh << seq_buf << "\n";
-        // fh << *it << "\n";
-
-		// cerr << get<0>(*it) << '\t' << get<1>(*it) << '\n';
-		o_buff.push_back(get<0>(*it));
-		o_buff.push_back(get<1>(*it));
-    }
-
-    fh.write((char*)&o_buff[0], o_buff.size() * sizeof(int_type));
-
-    fh.close();
-}
-
-template <class int_type>
-void multi_btc64(int n_path, char** kpaths) {	
-    int_type lsb = 1;
-    int_type b_mask = (lsb << bpb) - lsb;
-
-    int_type code_dict[1 << (sizeof(char) * 8)];
-    make_code_dict<int_type>(code_dict);
-
-    vector<tuple<int_type, int_type>> kdb;
-    vector<char> buffer(buffer_size);
-
-    for (int i = 1; i < n_path; ++i) {
-        cerr << kpaths[i] << endl;
-        bit_load<int_type>(kpaths[i], buffer, kdb, code_dict, b_mask);	
-    }
-
-    auto timeit = chrono_time();
-
-	sort(kdb.begin(), kdb.end(), cmp_tuple<int_type>);
-    // typename vector<int_type>::iterator ip = unique(kdb.begin(), kdb.end());
-    // kdb.resize(std::distance(kdb.begin(), ip));
-    cerr << "Sorting done! " << "It takes " << (chrono_time() - timeit) / 1000 << " secs" << endl;
-    cerr << "the kmer list has " << kdb.size() << " kmers" << endl;
-
-	char seq_buf[k+1];
-    // ofstream fh(out_path, ofstream::out | ofstream::binary);
-	vector<int_type> o_buff;
-
-	bool checkout_flag = true;
-	vector<tuple<int_type, int_type>> auto_queue;
-
-    cerr << "start to check conflicts" << endl;
-    for (auto it = kdb.begin(); it+1 != kdb.end(); ++it) {
-		// seq_decode(seq_buf, k+1, get<0>(*it), code_dict, b_mask);    
-		// cerr << seq_buf << '\t' << get<1>(*it) << '\n';
-		
-		if (get<0>(*it) == get<0>(*(it+1))) {
-			auto spe1 = stoi(to_string(get<1>(*it)).substr(0, 6));
-			auto spe2 = stoi(to_string(get<1>(*(it+1))).substr(0, 6));
-
-			if (spe1 != spe2) {
-				checkout_flag = false;			
-			} else {
-				auto_queue.push_back(*it);	
-			}
-
-			continue;
-		}
-
-		// check out when code(i) != code(i+1)
-		if (!checkout_flag) {
-			auto_queue.clear();
-			checkout_flag = true;
-		} else {
-			if (auto_queue.size() > 0){
-				for(auto iq = auto_queue.begin(); iq != auto_queue.end(); ++iq){
-					o_buff.push_back(get<0>(*iq));
-					o_buff.push_back(get<1>(*iq));
-				}
-
-				auto_queue.clear();
-			}
-			o_buff.push_back(get<0>(*it));
-			o_buff.push_back(get<1>(*it));
-		} 
-    }
-
-	auto end_ele = kdb.back();
-	if (checkout_flag) {
-		if (auto_queue.size() > 0){
-			for(auto iq = auto_queue.begin(); iq != auto_queue.end(); ++iq){
-				o_buff.push_back(get<0>(*iq));
-				o_buff.push_back(get<1>(*iq));
-			}
-
-			auto_queue.clear();
-		}
-		o_buff.push_back(get<0>(end_ele));
-		o_buff.push_back(get<1>(end_ele));
-	}
-
-    cerr << "the kmer list has " << o_buff.size()/2<< " kmers after purging conflicts" << endl;
-
-    ofstream fh(out_path, ofstream::binary);
+    ofstream fh(OUT_PATH, ofstream::binary);
 
     fh.write((char*)&o_buff[0], o_buff.size() * sizeof(int_type));
     fh.close();
 }
 
 void display_usage(char *fname){
-	cout << "usage: " << fname << " fpath [fpath ...]\n";
+    cout << "usage: " << fname << " fpath [fpath ...]\n";
 }
 
-int main(int argc, char** argv){		
-	if (argc == 2 && string(argv[1]) == "-h") {
-		display_usage(argv[0]);
-	} else if (argc >= 2) {
-        multi_btc64<uint64_t>(argc, argv);		
-	} else if (argc == 1) {
-        multi_btc64<uint64_t>();
+int main(int argc, char** argv){
+    if (argc == 2 && (string(argv[1]) == "-h")) {
+        display_usage(argv[0]);
     } else {
-        cerr << argv[0] << " reads from stdin or takes at least one arguments!" << endl;
-		display_usage(argv[0]);
-        exit(EXIT_FAILURE);
+        multi_btc64<uint64_t>(argc - 1, argv + 1);
     }
-
     return 0;
 }

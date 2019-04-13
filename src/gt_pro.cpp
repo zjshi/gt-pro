@@ -130,7 +130,7 @@ long chrono_time() {
 }
 
 template <int M2, int M3>
-bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_index, int channel, char* in_path, char* o_name, int aM2, int aM3) {
+bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_coords, int channel, char* in_path, char* o_name, int aM2, int aM3) {
 
 	if (aM2 != M2 || aM3 != M3) {
 		return false;
@@ -144,12 +144,12 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mm
 
 	auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
 
-	//Matching: lmer table lookup then linear search 
+	//Matching: lmer table lookup then linear search
 	vector<char> buffer(buffer_size);
 	char* window = buffer.data();
 
 	uint64_t n_lines = 0;
-	
+
 	//  Print progress update every 5 million lines.
 	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5 * 1000 * 1000;
 
@@ -275,16 +275,16 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mm
 	ofstream fh(out_path, ofstream::out | ofstream::binary);
 
 	if (kmer_matches.size() == 0) {
-		cerr << chrono_time() << ":  " << "zero hits" << endl;	
+		cerr << chrono_time() << ":  " << "zero hits" << endl;
 	} else {
 		for (int i=0;  i<kmer_matches.size();  ++i) {
-			kmer_matches[i] = snps_index[kmer_matches[i]];
+			kmer_matches[i] = snps_coords[kmer_matches[i]];
 		}
 		sort(kmer_matches.begin(), kmer_matches.end());
 		// FIXME.  The loop below doesn't output the last SNP.
 		// Also the counts may be off by 1.
 		uint64_t cur_count = 0;
-		uint64_t cur_snp = kmer_matches[0];		
+		uint64_t cur_snp = kmer_matches[0];
 		for (auto it : kmer_matches) {
 			if (it != cur_snp) {
 				fh << cur_snp << '\t' << cur_count << '\n';
@@ -304,45 +304,46 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mm
 	return true;
 }
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_index, int channel, char* in_path, char* o_name, int M2, const int M3) {
+
+void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_coords, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
 	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
 	bool match = false;
 
-	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 37>(lmer_indx, mmer_present, mmers, snps, snps_index, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
 
 	assert(match && "See comment for supporrted values of L and M.");
 }
@@ -427,7 +428,7 @@ struct DBIndex {
 	}
 
 private:
-	vector<ElementType> elements;	
+	vector<ElementType> elements;
 	ElementType* mmapped_data;
 	uint64_t expected_element_count;
 	int fd;
@@ -462,8 +463,18 @@ private:
 };
 
 
+struct SNPSeq {
+	uint64_t low_64;
+	uint64_t high_64;
+};
+
+
+uint32_t kmer_repr(uint64_t kmer, uint64_t snp_coords, uint32_t snp_id, SNPSeq snp_seq) {
+}
+
+
 int main(int argc, char** argv) {
-	extern char *optarg; 
+	extern char *optarg;
 	extern int optind;
 
 	bool dbflag = false;
@@ -475,12 +486,16 @@ int main(int argc, char** argv) {
 
 	// Number of bits in the prefix part of the K-mer (also called L-mer,
 	// even though it might not correspond to an exact number of bases).
+	// Override with command line -l parameter.
+	//
 	// This has a substantial effect on memory use.  Rule of thumb for
-	// perf is L2 >= K2 - M3.	
+	// perf is L2 >= K2 - M3.  However, that rule may be broken in order
+	// to reduce RAM use and eliminate I/O which is even worse for perf.
 	auto L2 = 29;
 
 	// Number of bits in the MMER_PRESENT index.  This has a substantial effect
 	// on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
+	// Override with command line -m parameter.
 	auto M3 = 36;
 
 	int n_threads = 1;
@@ -512,7 +527,7 @@ int main(int argc, char** argv) {
 			case 'h': case '?':
 				display_usage(fname);
 				exit(1);
-		}	
+		}
 	}
 
 	const auto M2 = K2 - L2;
@@ -523,7 +538,6 @@ int main(int argc, char** argv) {
 	assert(M2 < 64);
 	assert(M3 > 0);
 	assert(M3 < 64);
-	//assert(L2 >= K2 - M3);
 
 	// FIXME this is just for now
 	assert(L2 == 30 &&  "Sorry, for now only -l 30 is supported." );
@@ -557,7 +571,7 @@ int main(int argc, char** argv) {
 	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
 	dbbase = regex_replace(dbbase, regex("\\."), "_");
 
-	if (preload) {
+	if (preload) {  // force preload, probably unnecessary and wasteful
 		cerr << chrono_time() << ":  DB indexes will be preloaded." << endl;
 	}
 
@@ -581,10 +595,14 @@ int main(int argc, char** argv) {
 	const bool recompute_snps = db_snps.mmap_or_load(preload);
 	uint32_t* snps = db_snps.address();
 
-	const auto OPTIMIZED_DB_SNPS_INDEX = dbbase + "_optimized_db_snps_index.bin";
-	DBIndex<uint64_t> db_snps_index(OPTIMIZED_DB_SNPS_INDEX);
-	const bool recompute_snps_index = db_snps_index.mmap_or_load(preload);
-	vector<uint64_t>& snps_index = *db_snps_index.getElementsVector();
+	const auto OPTIMIZED_DB_SNPS_COORDS = dbbase + "_optimized_db_snps_coords.bin";
+	DBIndex<uint64_t> db_snps_coords(OPTIMIZED_DB_SNPS_COORDS);
+	const bool recompute_snps_coords = db_snps_coords.mmap_or_load(preload);
+	vector<uint64_t>& snps_coords = *db_snps_coords.getElementsVector();
+
+	// FIXME
+	vector<SNPSeq> snps_seqs;
+	assert(false);
 
 	uint64_t last_lmer;
 	uint64_t start = 0;
@@ -594,7 +612,7 @@ int main(int argc, char** argv) {
 	int fd = -1;
 	uint64_t* db_data = NULL;
 
-	if (recompute_mmer_present || recompute_lmer_indx || recompute_mmers || recompute_snps || recompute_snps_index) {
+	if (recompute_mmer_present || recompute_lmer_indx || recompute_mmers || recompute_snps || recompute_snps_coords) {
 		//Open file
 		fd = open(db_path, O_RDONLY, 0);
 		assert(fd != -1);
@@ -609,22 +627,33 @@ int main(int argc, char** argv) {
 				uint64_t mpres = kmer & MAX_PRESENT;
 				mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
 			}
-			if (recompute_mmers) {
-				assert(M2 == 32);
-				mmers[end / 2] = kmer;  // the 32 lsbs
-			}
-			if (recompute_snps || recompute_snps_index) {
+			if (recompute_mmers || recompute_snps || recompute_snps_coords) {
 				const auto snp = db_data[end + 1];
 				const auto map_entry = snps_map.find(snp);
 				uint32_t snp_id;
 				if (map_entry == snps_map.end()) {
-					snp_id = snps_index.size();
-					snps_index.push_back(snp);
+					snp_id = snps_map.size();
 					snps_map.insert({snp, snp_id});
+					if (recompute_snps_coords) {
+						snps_coords.push_back(snp);
+					}
 				} else {
 					snp_id = map_entry->second;
 				}
-				snps[end / 2] = snp_id;
+				if (recompute_snps) {
+					snps[end / 2] = snp_id;
+				} else {
+					assert(snps[end / 2] == snp_id && "File optimized_db_snps.bin is out of date.");
+				}
+				if (recompute_mmers) {
+					assert(snp_id <= snps_seqs.size());
+					if (snp_id == snps_seqs.size()) {
+						// This is the first kmer we've encountered for the given snp.
+						snps_seqs.push_back(SNPSeq());
+					}
+					// Sigh.  This is like solving a crossword puzzle.
+					mmers[end / 2] = kmer_repr(kmer, snp, snp_id, snps_seqs[snp_id]);
+				}
 			}
 			if (end > 0 && lmer != last_lmer) {
 				start = end / 2;
@@ -658,8 +687,8 @@ int main(int argc, char** argv) {
 		db_snps.save();
 	}
 
-	if (recompute_snps_index) {
-		db_snps_index.save();
+	if (recompute_snps_coords) {
+		db_snps_coords.save();
 	}
 
 	cerr << chrono_time() << ":  " << "Done with init for DB with " << (db_filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
@@ -669,7 +698,7 @@ int main(int argc, char** argv) {
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmers, snps, db_snps_index.address(), optind - in_pos, argv[optind], oname, M2, M3));
+		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmers, snps, db_snps_coords.address(), optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
@@ -680,12 +709,12 @@ int main(int argc, char** argv) {
 				ith.join();
 				// cerr << chrono_time() << ":  " << " Thread joined " << endl;
 			}
-			
+
 			cerr << chrono_time() << ":  " << "Ready to dispatch next round of threads." << endl;
 
 			th_array.clear();
 			tmp_counter = 0;
-		} 
+		}
 	}
 
 	if (th_array.size() > 0){
