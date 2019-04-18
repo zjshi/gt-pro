@@ -15,10 +15,6 @@ using namespace std;
 // global variable declaration starts here
 constexpr auto K = 31;
 
-// parameters for <unistd.h> file read; from the source of GNU coreutils wc
-constexpr auto STEP_SIZE = 256 * 1024 * 1024;
-constexpr auto BUFFER_SIZE = 256 * 1024 * 1024;
-
 // output file path
 constexpr auto OUT_PATH = "/dev/stdout";
 
@@ -70,16 +66,10 @@ int_type seq_encode(const char* buf, const int_type* code_dict, const int_type b
     return seq_code;
 }
 
-bool is_numeric(char* str) {
-    while (isdigit(*str)) {
-        ++str;
-    }
-    return *str == '\0';
-}
-
 template <class int_type>
 void bit_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec, const int_type* code_dict, const int_type b_mask) {
 
+    auto t_start = chrono_time();
     assert(k_path);
     cerr << "Loading file " << k_path << "." << endl;
 
@@ -89,63 +79,66 @@ void bit_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec, cons
         exit(EXIT_FAILURE);
     }
 
-    // The getline function (re)allocates memory for the line as needed.
-    char *line = NULL;
-    size_t buf_size = 0;
-    ssize_t line_len;
-    auto t_start = chrono_time();
-
-    while ((line_len = getline(&line, &buf_size, fp)) != -1) {
-        // A line of line_len characters has been read.   Squash the terminating \n, if present.
-        if (line_len >= 1 && line[line_len - 1] == '\n') {
-            line[line_len - 1] = '\0';
-        }
-        char *first_tab;
-        char *second_tab;
-        int_type kmer;
-        unsigned int snp_offset;
-        int_type snp;
-        bool has_wildcard;
-        // Parse first column: the K-mer.
-        {
-            // Identify extents of first_column, and make first_column into a 0-terminated string.
-            char *first_column = line;  // note: getline may move line to a different address in each iteration of this loop
-            first_tab = index(first_column, '\t');
-            assert(first_tab && ((first_tab - first_column) == K) && "First column needs to be a K-mer (contain exactly K characters).");
-            *first_tab = '\0';  // now first_column is a 0-terminated string.
-            has_wildcard = index(first_column, 'N') || index(first_column, 'n');
-            // This now supports both lowercase and uppercase ACTG characters.
-            if (!(has_wildcard)) {
-                kmer = seq_encode<int_type, K>(first_column, code_dict, b_mask);
+    // 3 columns in each line.
+    struct Column {
+        char* str;
+        size_t size;
+        ssize_t len;
+        int sep;
+        Column(int separator) : str(NULL), size(0), len(0), sep(separator) {};
+        ~Column() {
+            if (str) {
+                free(str);
             }
         }
-        // Parse second column: the snp offset within the K-mer (integer range 0..K-1).
-        {
-            char * second_column = first_tab + 1;
-            second_tab = index(second_column, '\t');
-            assert(second_tab && "Line must contain exactly 3 columns.");
-            *second_tab = '\0';  // now second_column is a 0-terminated string.
-            assert(is_numeric(second_column) && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
-            assert(strlen(second_column) <= 5 && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
-            snp_offset = strtoul(second_column, NULL, 10);
-            assert(snp_offset >= 0 && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
-            assert(snp_offset < K && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+        inline void read_from_file(FILE* fp) {
+            // getdelim will (re)allocate memory for str as needed.
+            len = getdelim(&str, &size, sep, fp);
+            if (len > 0 && str[len - 1] == sep) {
+                str[--len] = '\0';
+            }
         }
-        // Parse third and last column: decimal literal encoding species, major/minor allele, and genomic position of SNP.
-        {
-            char* third_column = second_tab + 1;
-            assert(is_numeric(third_column) && "Third and last column needs to be decimal literal with at most 16 digits.");
-            assert(strlen(third_column) <= 16 && "Third and last column needs to be decimal literal with at most 16 digits.");
-            snp = strtoull(third_column, NULL, 10);
+        inline bool is_numeric() {
+            char* s = str;
+            while (isdigit(*s)) {
+                ++s;
+            }
+            return *s == '\0';
         }
-        // Finally, emit the (kmer, snp) pair.  The snp_offset is still ignored at the moment.
-        if (!(has_wildcard)) {
+        inline bool does_not_contain_wildcard() {
+            char* s = str;
+            while (*s && *s != 'n' && *s != 'N') {
+                ++s;
+            }
+            return *s == '\0';
+        }
+    };
+
+    Column cols[] = { Column('\t'), Column('\t'), Column('\n') };
+
+    while (true) {
+        for (auto& c : cols) {
+            c.read_from_file(fp);
+        }
+        const bool end_of_file = cols[0].len < 0;
+        const bool some_columns_empty = cols[0].len <= 0 || cols[1].len <= 0 || cols[2].len <= 0;
+        assert(some_columns_empty == end_of_file && "Every line should have 3 non-empty columns, separated by tabs.");
+        if (end_of_file) {
+            break;
+        }
+        assert(cols[0].len == K && "First column needs to be a K-mer (contain exactly K characters)");
+        assert(cols[1].len <= 2 && cols[1].is_numeric() && "Second column needs to be decimal with at most 2 digits.");
+        assert(cols[2].len <= 16 && cols[2].is_numeric() && "Third and last column needs to be decimal with at most 16 digits.");
+        auto snp_offset = strtoul(cols[1].str, NULL, 10);
+        assert(snp_offset >= 0 && snp_offset < K && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+        int_type snp = strtoull(cols[2].str, NULL, 10);
+        if (cols[0].does_not_contain_wildcard()) {
+            auto kmer = seq_encode<int_type, K>(cols[0].str, code_dict, b_mask);
             k_vec.push_back(tuple<int_type, int_type>(kmer, snp));
         }
     }
     // Done parsing file.
-    free(line);
-    cerr << "Loaded file " << k_path << " in " << (chrono_time() - t_start) / 1000 << " secs." << endl;
+    cerr << "Loaded file " << k_path << " in " << (chrono_time() - t_start) / 1000.0 << " secs." << endl;
 }
 
 template <class int_type>
@@ -160,7 +153,24 @@ int_type get_snp(const tuple<int_type, int_type>& kmer_snp) {
 
 template <class int_type>
 int_type get_species(const tuple<int_type, int_type>& kmer_snp) {
-    return stoi(to_string(get_snp(kmer_snp)).substr(0, 6));
+    // We want the most signifficant 6 digits.  The number of digits to begin with is at most 16.
+    // Here is a slow way to do it:
+    //     x = stoi(to_string(get_snp(kmer_snp)).substr(0, 6));
+    // The fast way is below.  This actually makes a big difference in overall perf.
+    auto x = get_snp(kmer_snp);
+    // if it has 13 or more digits, remove the last 7
+    if (x >= 1000000000000) { // 10**12
+        x /= 10000000;        // 10**7
+    }
+    // if it has 10 or more digits, remove the last 4
+    if (x >= 1000000000) {   // 10**9
+        x /= 10000;          // 10**4
+    }
+    // so long as it still has 7 or more digits, keep chopping off the last digit
+    while (x >= 1000000) {   // 10**6
+        x /= 10;             // 10**1
+    }
+    return x;
 }
 
 template <class int_type>
@@ -171,7 +181,6 @@ void multi_btc64(int n_path, char** kpaths) {
     auto code_dict = new_code_dict<int_type>();
 
     vector<tuple<int_type, int_type>> kdb;
-    vector<char> buffer(BUFFER_SIZE);
 
     if (n_path == 0) {
         cerr << "No paths specified on command line --> will read from /dev/stdin." << endl;
@@ -193,8 +202,6 @@ void multi_btc64(int n_path, char** kpaths) {
     sort(kdb.begin(), kdb.end());
     cerr << "Sorting done! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
 
-    char seq_buf[K + 1];
-
     uint64_t multispecies_kmers = 0;
     uint64_t multispecies_unique_kmers = 0;
     uint64_t monospecies_kmers = 0;
@@ -213,18 +220,22 @@ void multi_btc64(int n_path, char** kpaths) {
         // Scan forward over all hits from the current kmer value.  Are all those hits to the same species?
         const auto kmer = get_kmer(*current);
         const auto species = get_species(*current);
+        // cerr << "consider kmer " << hex << kmer << " species " << dec << species << endl;
         bool kmer_is_monospecific = true;
         auto next = current + 1;
         while (next != kdb.end() && get_kmer(*next) == kmer) {
+            // cerr << "consider next species " << get_species(*next);
             kmer_is_monospecific = kmer_is_monospecific && (get_species(*next) == species);
+            // cerr << " monospecific " << kmer_is_monospecific << endl;
             ++next;
         }
         if (kmer_is_monospecific) {
             // Every snp for this kmer is from the same species.  Emit.
             for (auto kmer_snp = current;  kmer_snp != next;  ++kmer_snp) {
-                assert(get_kmer(*kmer_snp) == kmer);
+                // assert(get_kmer(*kmer_snp) == kmer);
                 o_buff.push_back(kmer);
                 o_buff.push_back(get_snp(*kmer_snp));
+                // cerr << "emit " << hex << kmer << " " << dec << get_snp(*kmer_snp) << endl;
             }
             // Count stats.
             monospecies_kmers += (next - current);
@@ -234,6 +245,7 @@ void multi_btc64(int n_path, char** kpaths) {
             // Just count some stats.
             multispecies_kmers += (next - current);
             ++multispecies_unique_kmers;
+            // cerr << "do not emit " << hex << kmer << endl;
         }
         current = next;
     }
