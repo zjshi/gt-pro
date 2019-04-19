@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <mutex>
+#include <thread>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -15,6 +17,18 @@ using namespace std;
 // global variable declaration starts here
 constexpr auto K = 31;
 
+// NB:  On little-endian achitectures, the second field of a tuple is stored at a lower memory address
+// than the first field.  This memory layout is the exact opposite of what you get from a struct.
+//
+// The rationale behind the tuple layout is this:  The lexicographic sort order on tuples is the
+// same as the numeric sort order when the tuple's bits are interpreted as one giant integer.
+//
+// In our application, the tuples represent a kmer and its snp.  We like to sort by the kmer first,
+// so the kmer would be the first element of the tuple, will take the higher addresses in
+// memory, and will come *after* the SNP when tuples are persisted to a file.
+//
+using KmerData = tuple<uint64_t, uint64_t>;
+
 // output file path
 constexpr auto OUT_PATH = "/dev/stdout";
 
@@ -24,10 +38,7 @@ long chrono_time() {
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-constexpr int BITS_PER_BASE = 2;
-
-template <class int_type>
-int_type bit_encode(const char c) {
+uint64_t bit_encode(const char c) {
     switch (c) {
     case 'A': return 0;
     case 'C': return 1;
@@ -37,42 +48,40 @@ int_type bit_encode(const char c) {
     assert(false);
 }
 
-template <class int_type>
-vector<int_type> new_code_dict() {
-
-    constexpr auto CHAR_LIMIT = 1 << (sizeof(char) * 8);
-    vector<int_type> code_dict;
-    for (uint64_t c = 0; c < CHAR_LIMIT; ++c) {
-        // This helps us detect non-nucleotide characters on encoding.
-        code_dict.push_back(-1);
+struct CodeDict {
+    vector<int8_t> code_dict;
+    int8_t* data;
+    CodeDict() {
+        constexpr auto CHAR_LIMIT = 1 << (sizeof(char) * 8);
+        for (uint64_t c = 0; c < CHAR_LIMIT; ++c) {
+            // This helps us detect non-nucleotide characters on encoding.
+            code_dict.push_back(-1);
+        }
+        code_dict['A'] = code_dict['a'] = bit_encode('A');
+        code_dict['C'] = code_dict['c'] = bit_encode('C');
+        code_dict['G'] = code_dict['g'] = bit_encode('G');
+        code_dict['T'] = code_dict['t'] = bit_encode('T');
+        data = code_dict.data();
     }
+};
 
-    code_dict['A'] = code_dict['a'] = bit_encode<int_type>('A');
-    code_dict['C'] = code_dict['c'] = bit_encode<int_type>('C');
-    code_dict['G'] = code_dict['g'] = bit_encode<int_type>('G');
-    code_dict['T'] = code_dict['t'] = bit_encode<int_type>('T');
+const CodeDict code_dict;
 
-    return code_dict;
-}
-
-template <class int_type, int len>
-int_type seq_encode(const char* buf, const int_type* code_dict, const int_type b_mask) {
-    int_type seq_code = 0;
+template <int len>
+uint64_t seq_encode(const char* buf) {
+    constexpr int BITS_PER_BASE = 2;
+    uint64_t seq_code = 0;
     for (int i=0;  i < len;  ++i) {
-        const int_type b_code = code_dict[buf[i]];
+        const auto b_code = code_dict.data[buf[i]];
         assert(b_code != -1 && "Trying to encode a character that is not ACTG or actg.");
-        seq_code |= ((b_code & b_mask) << (BITS_PER_BASE * (len - i - 1)));
+        seq_code |= (((uint64_t) b_code) << (BITS_PER_BASE * (len - i - 1)));
     }
     return seq_code;
 }
 
-template <class int_type>
-void bit_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec, const int_type* code_dict, const int_type b_mask) {
+void bit_load(const char* k_path, vector<KmerData>& result) {
 
-    auto t_start = chrono_time();
     assert(k_path);
-    cerr << "Loading file " << k_path << "." << endl;
-
     FILE *fp = fopen(k_path, "r");
     if (fp == NULL) {
         cerr << "Trouble opening file " << k_path << "." << endl;
@@ -81,32 +90,33 @@ void bit_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec, cons
 
     // 3 columns in each line.
     struct Column {
-        char* str;
+        char* c_str;
         size_t size;
         ssize_t len;
         int sep;
-        Column(int separator) : str(NULL), size(0), len(0), sep(separator) {};
+        Column(int separator) : c_str(NULL), size(0), len(0), sep(separator) {};
         ~Column() {
-            if (str) {
-                free(str);
+            if (c_str) {
+                free(c_str);
             }
         }
         inline void read_from_file(FILE* fp) {
-            // getdelim will (re)allocate memory for str as needed.
-            len = getdelim(&str, &size, sep, fp);
-            if (len > 0 && str[len - 1] == sep) {
-                str[--len] = '\0';
+            // getdelim will (re)allocate memory for c_str as needed.
+            len = getdelim(&c_str, &size, sep, fp);
+            // squash delimiter if present
+            if (len > 0 && c_str[len - 1] == sep) {
+                c_str[--len] = '\0';
             }
         }
         inline bool is_numeric() {
-            char* s = str;
+            char* s = c_str;
             while (isdigit(*s)) {
                 ++s;
             }
             return *s == '\0';
         }
         inline bool does_not_contain_wildcard() {
-            char* s = str;
+            char* s = c_str;
             while (*s && *s != 'n' && *s != 'N') {
                 ++s;
             }
@@ -129,35 +139,40 @@ void bit_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec, cons
         assert(cols[0].len == K && "First column needs to be a K-mer (contain exactly K characters)");
         assert(cols[1].len <= 2 && cols[1].is_numeric() && "Second column needs to be decimal with at most 2 digits.");
         assert(cols[2].len <= 16 && cols[2].is_numeric() && "Third and last column needs to be decimal with at most 16 digits.");
-        auto snp_offset = strtoul(cols[1].str, NULL, 10);
-        assert(snp_offset >= 0 && snp_offset < K && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
-        int_type snp = strtoull(cols[2].str, NULL, 10);
+        const auto offset = strtoul(cols[1].c_str, NULL, 10);
+        assert(offset >= 0 && offset < K && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
+        const uint64_t snp_sans_offset = strtoull(cols[2].c_str, NULL, 10);
+        // 16 decimal digits fit into 56 bits, so we have 8 bits left to encode the snp_offset.
+        // We only need 5 bits for that, but let's take 8 to save space for future extensions.
+        // Note that just from the snp_with_offset we could recover the kmer if we have the reference genome.
+        assert(snp_sans_offset < (1ULL << 56));
+        assert(offset < (1ULL << 8));
+        const uint64_t snp_with_offset = (snp_sans_offset << 8) | offset;
         if (cols[0].does_not_contain_wildcard()) {
-            auto kmer = seq_encode<int_type, K>(cols[0].str, code_dict, b_mask);
-            k_vec.push_back(tuple<int_type, int_type>(kmer, snp));
+            auto kmer = seq_encode<K>(cols[0].c_str);
+            result.push_back(KmerData(kmer, snp_sans_offset)); // snp_with_offset));
         }
     }
-    // Done parsing file.
-    cerr << "Loaded file " << k_path << " in " << (chrono_time() - t_start) / 1000.0 << " secs." << endl;
 }
 
-template <class int_type>
-int_type get_kmer(const tuple<int_type, int_type>& kmer_snp) {
-    return get<0>(kmer_snp);
+inline uint64_t get_kmer(const KmerData& kmer_data) {
+    return get<0>(kmer_data);
 }
 
-template <class int_type>
-int_type get_snp(const tuple<int_type, int_type>& kmer_snp) {
-    return get<1>(kmer_snp);
+inline uint64_t get_snp_with_offset(const KmerData& kmer_data) {
+    return get<1>(kmer_data);
 }
 
-template <class int_type>
-int_type get_species(const tuple<int_type, int_type>& kmer_snp) {
+inline uint64_t get_snp(const KmerData& kmer_data) {
+    return get<1>(kmer_data); // >> 8;
+}
+
+uint64_t get_species(const KmerData& kmer_data) {
     // We want the most signifficant 6 digits.  The number of digits to begin with is at most 16.
     // Here is a slow way to do it:
-    //     x = stoi(to_string(get_snp(kmer_snp)).substr(0, 6));
+    //     x = stoi(to_string(get_snp(kmer_data)).substr(0, 6));
     // The fast way is below.  This actually makes a big difference in overall perf.
-    auto x = get_snp(kmer_snp);
+    auto x = get_snp(kmer_data);
     // if it has 13 or more digits, remove the last 7
     if (x >= 1000000000000) { // 10**12
         x /= 10000000;        // 10**7
@@ -173,33 +188,140 @@ int_type get_species(const tuple<int_type, int_type>& kmer_snp) {
     return x;
 }
 
-template <class int_type>
-void multi_btc64(int n_path, char** kpaths) {
-    int_type lsb = 1;
-    int_type b_mask = (lsb << BITS_PER_BASE) - lsb;
+void multi_btc64(int n_path, const char** kpaths) {
 
-    auto code_dict = new_code_dict<int_type>();
-
-    vector<tuple<int_type, int_type>> kdb;
+    auto timeit = chrono_time();
 
     if (n_path == 0) {
         cerr << "No paths specified on command line --> will read from /dev/stdin." << endl;
         n_path = 1;
-        char* stdin = "/dev/stdin";
+        const char* stdin = "/dev/stdin";
         kpaths = &stdin;
     }
 
-    auto timeit = chrono_time();
+    // Just enough threads to be able to saturate input I/O, but not too many so
+    // the merging of results in memory doesn't kill us.
+    constexpr auto MAX_THREADS = 10;
+    int num_running = 0;
+    mutex mtx;
+
+    bool running[MAX_THREADS];
+    for (auto& r : running) {
+        r = false;
+    }
+
+    vector<KmerData> kdb;
+    vector<KmerData>* kkdb[MAX_THREADS];
+    kkdb[0] = &kdb;
+    for (int i = 1;  i < MAX_THREADS;  ++i) {
+        kkdb[i] = new vector<KmerData>();
+    }
+
+    // This function runs in each thread.  It loads the bits of an input file,
+    // then appends those bits to the kdb vector.
+    auto thread_func = [&num_running, &running, &mtx, &kkdb](const char* input_file_path, int thread_id) {
+        assert(0 <= thread_id && thread_id < MAX_THREADS);
+        auto t_start = chrono_time();
+        bit_load(input_file_path, *(kkdb[thread_id]));
+        mtx.lock(); {
+            cerr << "Loaded file " << input_file_path << " in " << (chrono_time() - t_start) / 1000.0 << " secs." << endl;
+            --num_running;
+            running[thread_id] = false;
+        }
+        mtx.unlock();
+    };
+
+    auto wait_for_thread_slot = [&num_running, &running, &mtx](const char* input_file_path = NULL) -> int {
+        bool thread_slot_is_available = false;
+        int thread_id = -1;
+        while (!(thread_slot_is_available)) {
+            mtx.lock(); {
+                thread_slot_is_available = (num_running < MAX_THREADS);
+                if (thread_slot_is_available) {
+                    ++num_running;
+                    if (input_file_path) {
+                        cerr << "Loading file " << input_file_path << "." << endl;
+                    }
+                    for(int i = 0;  i < MAX_THREADS;  ++i) {
+                        if (!(running[i])) {
+                            running[i] = true;
+                            thread_id = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            mtx.unlock();
+            if (!(thread_slot_is_available)) {
+                this_thread::sleep_for(chrono::milliseconds(10));
+            }
+        }
+        assert(0 <= thread_id && thread_id < MAX_THREADS);
+        return thread_id;
+    };
 
     for (int i = 0; i < n_path; ++i) {
-        bit_load<int_type>(kpaths[i], kdb, code_dict.data(), b_mask);
+        auto thread_id = wait_for_thread_slot(kpaths[i]);
+        thread(thread_func, kpaths[i], thread_id).detach();
     }
-    cerr << "Loaded all files! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
+
+    // Wait for all threads to complete.
+    for (int i = 0;  i < MAX_THREADS;  ++i) {
+        wait_for_thread_slot();
+    }
+
+    // Some day we should do this without the merge.  Or, with a merge that's instantaneous.
+    // That can be achieved with indirection on the indices of the final sorted array,
+    // similar to page table address translation.
+    auto time_merge = chrono_time();
+    cerr << "Merging input data from " << MAX_THREADS << " threads." << endl;
+
+    // note *kkdb[0] is an alias for kdb
+    for (int i = 1; i < MAX_THREADS; ++i) {
+        kdb.insert(kdb.end(), kkdb[i]->begin(), kkdb[i]->end());
+        delete kkdb[i];
+    }
+
+    cerr << "Merged input data.  That took " << (chrono_time() - time_merge) / 1000 << " secs." << endl;
+    cerr << "Loaded all files! " << "That took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
     cerr << "The unfiltered kmer list has " << kdb.size() << " kmers" << endl;
 
+    cerr << "Sorting..." << endl;
     timeit = chrono_time();
-
-    sort(kdb.begin(), kdb.end());
+    const auto kdb_size = kdb.size();
+    if (kdb_size < 1000 * 1000) {
+        sort(kdb.begin(), kdb.end());
+    } else {
+        // hacky parallel sort, funny c++ hasn't gotten around to making this standard
+        // cuts the sort time in half, which is a considerable part of the program's overall runtime
+        using iterator = vector<KmerData>::iterator;
+        auto sorter = [](iterator start, iterator end) {
+            sort(start, end);
+        };
+        auto merger = [](iterator start, iterator middle, iterator end) {
+            // LOL, turns out this isn't actually in-place, so it allocs tons of RAM
+            // should probably do something different here, may be just bite the cost of the slower sort
+            inplace_merge(start, middle, end);
+        };
+        auto q0 = kdb.begin();
+        auto q1 = q0 + kdb_size / 4;
+        auto q2 = q1 + kdb_size / 4;
+        auto q3 = q2 + kdb_size / 4;
+        auto q4 = kdb.end();
+        thread sorters[] = {
+             thread(sorter, q0, q1),
+             thread(sorter, q1, q2),
+             thread(sorter, q2, q3),
+             thread(sorter, q3, q4),
+        };
+        for (auto& t : sorters) {
+            t.join();
+        }
+        auto m = thread(merger, q0, q1, q2);
+        merger(q2, q3, q4);
+        m.join();
+        merger(q0, q2, q4);
+    }
     cerr << "Sorting done! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
 
     uint64_t multispecies_kmers = 0;
@@ -207,11 +329,10 @@ void multi_btc64(int n_path, char** kpaths) {
     uint64_t monospecies_kmers = 0;
     uint64_t monospecies_unique_kmers = 0;
 
-    vector<int_type> o_buff;
-
     cerr << "Starting to check conflicts:  Will filter out kmers that occur in multiple species." << endl;
 
     timeit = chrono_time();
+    ofstream fh(OUT_PATH, ofstream::binary);
 
     // Scroll through kdb, choosing whether to emit or drop a kmer depending on whether all hits
     // from that kmer are to the same species or to multiple species.
@@ -220,56 +341,47 @@ void multi_btc64(int n_path, char** kpaths) {
         // Scan forward over all hits from the current kmer value.  Are all those hits to the same species?
         const auto kmer = get_kmer(*current);
         const auto species = get_species(*current);
-        // cerr << "consider kmer " << hex << kmer << " species " << dec << species << endl;
         bool kmer_is_monospecific = true;
         auto next = current + 1;
         while (next != kdb.end() && get_kmer(*next) == kmer) {
-            // cerr << "consider next species " << get_species(*next);
             kmer_is_monospecific = kmer_is_monospecific && (get_species(*next) == species);
-            // cerr << " monospecific " << kmer_is_monospecific << endl;
             ++next;
         }
         if (kmer_is_monospecific) {
             // Every snp for this kmer is from the same species.  Emit.
-            for (auto kmer_snp = current;  kmer_snp != next;  ++kmer_snp) {
-                // assert(get_kmer(*kmer_snp) == kmer);
-                o_buff.push_back(kmer);
-                o_buff.push_back(get_snp(*kmer_snp));
-                // cerr << "emit " << hex << kmer << " " << dec << get_snp(*kmer_snp) << endl;
+            // This doesn't work:
+            //     fh.write((char*) &(*current), sizeof(*current) * (next - current));
+            for (auto kso = current;  kso != next;  ++kso) {
+                const auto snp_with_offset = get_snp_with_offset(*kso);
+                fh.write((char*) &(kmer), sizeof(kmer));
+                fh.write((char*) &(snp_with_offset), sizeof(snp_with_offset));
             }
-            // Count stats.
             monospecies_kmers += (next - current);
             ++monospecies_unique_kmers;
         } else {
             // The current kmer hits multiple species.  Suppress.
-            // Just count some stats.
             multispecies_kmers += (next - current);
             ++multispecies_unique_kmers;
-            // cerr << "do not emit " << hex << kmer << endl;
         }
         current = next;
     }
 
     cerr << "Filtering done! " << "It took " << (chrono_time() - timeit) / 1000 << " secs." << endl;
-    cerr << "The filtered kmer list has " << o_buff.size()/2<< " kmers after purging conflicts." << endl;
-    cerr << "Monospecies kmers: " <<  monospecies_kmers << " (" << monospecies_unique_kmers << " unique)." << endl;
-    cerr << "Multispecies kmers: " <<  multispecies_kmers << " (" << multispecies_unique_kmers << " unique)." << endl;
+    cerr << "The filtered kmer list has " << monospecies_kmers << " monospecies kmers (" << monospecies_unique_kmers << " unique)." << endl;
+    cerr << "Purging conflicts removed " <<  multispecies_kmers << " multispecies kmers (" << multispecies_unique_kmers << " unique)." << endl;
 
-    ofstream fh(OUT_PATH, ofstream::binary);
-
-    fh.write((char*)&o_buff[0], o_buff.size() * sizeof(int_type));
     fh.close();
 }
 
-void display_usage(char *fname){
+void display_usage(const char *fname){
     cout << "usage: " << fname << " fpath [fpath ...]\n";
 }
 
-int main(int argc, char** argv){
+int main(int argc, const char** argv){
     if (argc == 2 && (string(argv[1]) == "-h")) {
         display_usage(argv[0]);
     } else {
-        multi_btc64<uint64_t>(argc - 1, argv + 1);
+        multi_btc64(argc - 1, argv + 1);
     }
     return 0;
 }
