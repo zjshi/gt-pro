@@ -74,7 +74,7 @@ uint64_t seq_encode(const char* buf) {
     for (int i=0;  i < len;  ++i) {
         const auto b_code = code_dict.data[buf[i]];
         assert(b_code != -1 && "Trying to encode a character that is not ACTG or actg.");
-        seq_code |= (((uint64_t) b_code) << (BITS_PER_BASE * (len - i - 1)));
+        seq_code |= (((uint64_t) b_code) << (BITS_PER_BASE * i));
     }
     return seq_code;
 }
@@ -150,7 +150,7 @@ void bit_load(const char* k_path, vector<KmerData>& result) {
         const uint64_t snp_with_offset = (snp_sans_offset << 8) | offset;
         if (cols[0].does_not_contain_wildcard()) {
             auto kmer = seq_encode<K>(cols[0].c_str);
-            result.push_back(KmerData(kmer, snp_sans_offset)); // snp_with_offset));
+            result.push_back(KmerData(kmer, snp_with_offset));
         }
     }
 }
@@ -164,7 +164,7 @@ inline uint64_t get_snp_with_offset(const KmerData& kmer_data) {
 }
 
 inline uint64_t get_snp(const KmerData& kmer_data) {
-    return get<1>(kmer_data); // >> 8;
+    return get<1>(kmer_data) >> 8;
 }
 
 uint64_t get_species(const KmerData& kmer_data) {
@@ -200,8 +200,9 @@ void multi_btc64(int n_path, const char** kpaths) {
     }
 
     // Just enough threads to be able to saturate input I/O, but not too many so
-    // the merging of results in memory doesn't kill us.
-    constexpr auto MAX_THREADS = 10;
+    // the merging of results in memory doesn't kill us.  In practice this produces
+    // anywhere between 2x and 4x speedup, depending on the available I/O bandwidth.
+    constexpr auto MAX_THREADS = 12;
     int num_running = 0;
     mutex mtx;
 
@@ -231,6 +232,7 @@ void multi_btc64(int n_path, const char** kpaths) {
         mtx.unlock();
     };
 
+    // Wait for available thread slot (out of MAX_THREADS), and return its thread_id.
     auto wait_for_thread_slot = [&num_running, &running, &mtx](const char* input_file_path = NULL) -> int {
         bool thread_slot_is_available = false;
         int thread_id = -1;
@@ -292,15 +294,15 @@ void multi_btc64(int n_path, const char** kpaths) {
     if (kdb_size < 1000 * 1000) {
         sort(kdb.begin(), kdb.end());
     } else {
-        // hacky parallel sort, funny c++ hasn't gotten around to making this standard
-        // cuts the sort time in half, which is a considerable part of the program's overall runtime
+        // Hacky parallel sort, funny c++ hasn't gotten around to making this standard.
+        // Cuts the sort time in half, which is a considerable part of the program's overall runtime.
         using iterator = vector<KmerData>::iterator;
         auto sorter = [](iterator start, iterator end) {
             sort(start, end);
         };
         auto merger = [](iterator start, iterator middle, iterator end) {
-            // LOL, turns out this isn't actually in-place, so it allocs tons of RAM
-            // should probably do something different here, may be just bite the cost of the slower sort
+            // LOL, turns out this "inplace_merge" isn't actually in-place, so it allocs tons of RAM!
+            // Should do something much better here --- like parallel quicksort with depth 2.
             inplace_merge(start, middle, end);
         };
         auto q0 = kdb.begin();
@@ -349,13 +351,9 @@ void multi_btc64(int n_path, const char** kpaths) {
         }
         if (kmer_is_monospecific) {
             // Every snp for this kmer is from the same species.  Emit.
-            // This doesn't work:
-            //     fh.write((char*) &(*current), sizeof(*current) * (next - current));
-            for (auto kso = current;  kso != next;  ++kso) {
-                const auto snp_with_offset = get_snp_with_offset(*kso);
-                fh.write((char*) &(kmer), sizeof(kmer));
-                fh.write((char*) &(snp_with_offset), sizeof(snp_with_offset));
-            }
+            // NOTE:  The snp bytes will come before the kmer bytes in the output.
+            // See the comment on the definition of KmerData above at the very top.
+            fh.write((char*) &(*current), sizeof(*current) * (next - current));
             monospecies_kmers += (next - current);
             ++monospecies_unique_kmers;
         } else {

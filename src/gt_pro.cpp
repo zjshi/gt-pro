@@ -49,6 +49,7 @@ constexpr auto BITS_PER_BASE = 2;
 constexpr auto K2 = BITS_PER_BASE * K;
 
 constexpr uint64_t LSB = 1;
+constexpr uint64_t BIT_MASK = (LSB << (K * BITS_PER_BASE)) - LSB;
 
 // Choose appropriately sized integer types to represent offsets into
 // the database.
@@ -57,6 +58,10 @@ constexpr auto START_BITS = 48;
 constexpr auto LEN_BITS = 64 - START_BITS;
 constexpr auto MAX_START = (LSB << START_BITS) - LSB;
 constexpr auto MAX_LEN = (LSB << LEN_BITS) - LSB;
+
+// element 0, 1:  61-bp nucleotide sequence centered on SNP.
+// element 2:  SNP coordinates consisting of species ID, major/minor allele bit, and genomic position.
+using SNPRepr = tuple<uint64_t, uint64_t, uint64_t>;
 
 // This param is only useful for perf testing.  The setting below, not
 // to exceed 64 TB of RAM, is equivalent to infinity in 2019.
@@ -107,7 +112,7 @@ template <class int_type, int len>
 int_type seq_encode(const char* buf, const uint8_t* code_dict) {
 	int_type seq_code = 0;
 	// This loop may be unrolled by the compiler because len is a compile-time constant.
-	for (int bitpos = (len - 1) * BITS_PER_BASE;  bitpos >= 0;  bitpos -= BITS_PER_BASE) {
+	for (int bitpos = 0;  bitpos < len;  bitpos += BITS_PER_BASE) {
 		const int_type b_code = code_dict[*buf++];
 		seq_code |= (b_code << bitpos);
 	}
@@ -130,14 +135,14 @@ long chrono_time() {
 }
 
 template <int M2, int M3>
-bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_coords, int channel, char* in_path, char* o_name, int aM2, int aM3) {
+bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, SNPRepr* snps, int channel, char* in_path, char* o_name, int aM2, int aM3) {
 
 	if (aM2 != M2 || aM3 != M3) {
 		return false;
 	}
 
-	const uint64_t MAX_PRESENT = (LSB << M3) - LSB;
-    constexpr int XX = (M3 + 1) / 2;  // number DNA letters to cover MAX_PRESENT
+	const uint64_t MAX_BLOOM = (LSB << M3) - LSB;
+    constexpr int XX = (M3 + 1) / 2;  // number DNA letters to cover MAX_BLOOM
 
 	uint8_t code_dict[1 << (sizeof(char) * 8)];
 	make_code_dict(code_dict);
@@ -229,26 +234,30 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mm
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX, code_dict) & MAX_PRESENT;
-					const auto mpres = mmer_present[mmer_pres / 64] >> (mmer_pres % 64);
+					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX, code_dict) & MAX_BLOOM;
+					const auto mpres = mmer_bloom[mmer_pres / 64] >> (mmer_pres % 64);
 
 					if (mpres & 1) {
 						const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
 						const uint32_t lmer = kmer >> M2;
-						const uint32_t mmer = kmer; // FIXME, requires M2=32
-						const auto range = lmer_indx[lmer];
+						const auto range = lmer_index[lmer];
 						const auto start = range >> LEN_BITS;
 						const auto end = min(MAX_END, start + (range & MAX_LEN));
 
 						for (uint64_t z = start;  z < end;  ++z) {
-							const auto db_mmer = mmers[z];
-							if (mmer == db_mmer) {
-								const auto snp_id = snps[z];
+							const auto kmi = kmers_index[z];
+							const auto offset = kmi & 0x1f;
+							const auto snp_id = kmi >> 5;
+							const auto& snps_repr = snps[snp_id];
+							const auto high = get<1>(snps_repr) << (offset * BITS_PER_BASE);
+							const auto low = get<0>(snps_repr) >> (62 - (offset * BITS_PER_BASE));
+							const auto db_kmer = (high | low) & BIT_MASK;
+							if (kmer == db_kmer) {
 								if (footprint.find(snp_id) == footprint.end()) {
 									kmer_matches.push_back(snp_id);
 									footprint.insert({snp_id, 1});
 								}
-							} else if (mmer < db_mmer) {
+							} else if (kmer < db_kmer) {
 								break;
 							}
 						}
@@ -278,7 +287,7 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mm
 		cerr << chrono_time() << ":  " << "zero hits" << endl;
 	} else {
 		for (int i=0;  i<kmer_matches.size();  ++i) {
-			kmer_matches[i] = snps_coords[kmer_matches[i]];
+			kmer_matches[i] = get<2>(snps[kmer_matches[i]]);
 		}
 		sort(kmer_matches.begin(), kmer_matches.end());
 		// FIXME.  The loop below doesn't output the last SNP.
@@ -305,45 +314,45 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mm
 }
 
 
-void kmer_lookup(LmerRange* lmer_indx, uint64_t* mmer_present, uint32_t* mmers, uint32_t* snps, uint64_t* snps_coords, int channel, char* in_path, char* o_name, int M2, const int M3) {
+void kmer_lookup(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, SNPRepr* snps, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
 	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
 	bool match = false;
 
-	match = match || kmer_lookup_work<32, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<32, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<33, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<33, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<34, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<34, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<35, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<35, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
 
-	match = match || kmer_lookup_work<36, 30>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 32>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 34>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 35>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 36>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 37>(lmer_indx, mmer_present, mmers, snps, snps_coords, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	match = match || kmer_lookup_work<36, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
 
 	assert(match && "See comment for supporrted values of L and M.");
 }
@@ -493,7 +502,7 @@ int main(int argc, char** argv) {
 	// to reduce RAM use and eliminate I/O which is even worse for perf.
 	auto L2 = 29;
 
-	// Number of bits in the MMER_PRESENT index.  This has a substantial effect
+	// Number of bits in the MMER_BLOOM index.  This has a substantial effect
 	// on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
 	// Override with command line -m parameter.
 	auto M3 = 36;
@@ -545,7 +554,7 @@ int main(int argc, char** argv) {
 
 	const auto LMER_MASK = (LSB << L2) - LSB;
 	const auto MMER_MASK = (LSB << M2) - LSB;
-	const auto MAX_PRESENT = (LSB << M3) - LSB;
+	const auto MAX_BLOOM = (LSB << M3) - LSB;
 
 	cout << fname << '\t' << db_path << '\t' << n_threads << "\t" << (preload ? "preload" : "mmap") << "\t" << L2 << "\t" << M3 << endl;
 
@@ -575,30 +584,46 @@ int main(int argc, char** argv) {
 		cerr << chrono_time() << ":  DB indexes will be preloaded." << endl;
 	}
 
-	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
-    DBIndex<uint64_t> db_mmer_present(OPTIMIZED_DB_MMER_PRESENT, (1 + MAX_PRESENT) / 64);  // 1 bit per possible mmer
-	const bool recompute_mmer_present = db_mmer_present.mmap_or_load(preload);
-	uint64_t* mmer_present = db_mmer_present.address();
-
-	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_v2_" + to_string(L2) + ".bin";
-    DBIndex<LmerRange> db_lmer_index(OPTIMIZED_DB_LMER_INDX, 1 + LMER_MASK);
-	const bool recompute_lmer_indx = db_lmer_index.mmap_or_load(preload);
-	LmerRange* lmer_indx = db_lmer_index.address();
-
-	const auto OPTIMIZED_DB_MMERS = dbbase + "_optimized_db_mmers_" + to_string(M2) + ".bin";
-	DBIndex<uint32_t> db_mmers(OPTIMIZED_DB_MMERS, db_filesize / 16);
-	const auto recompute_mmers = db_mmers.mmap_or_load(preload);
-	uint32_t* mmers = db_mmers.address();
-
-	const auto OPTIMIZED_DB_SNPS = dbbase + "_optimized_db_snps.bin";
-	DBIndex<uint32_t> db_snps(OPTIMIZED_DB_SNPS, db_filesize / 16);
+	// The input (un-optimized) DB is a sequence of 56-bit snp followed by 8-bit offset
+	// of SNP within kmer followed by 64-bit kmer.  The 56-bit snp encodes the species id,
+	// major/minor allele, and genomic position.  From that we build the "optimized" DBs
+	// below.  The first one, db_snps, lists the unique SNPs in arbitrary order; and
+	// for each SNP in addition to the 56-bits mentioned above it also shows the
+	// sequence of 61bp centered on the SNP inferred from all kmers in the original DB.
+    // This needs to be explained a little better;  see email (eventually docs).
+	DBIndex<SNPRepr> db_snps(dbbase + "_optimized_db_snps.bin");
 	const bool recompute_snps = db_snps.mmap_or_load(preload);
-	uint32_t* snps = db_snps.address();
+	vector<SNPRepr>& snps = *db_snps.getElementsVector();
 
-	const auto OPTIMIZED_DB_SNPS_COORDS = dbbase + "_optimized_db_snps_coords.bin";
-	DBIndex<uint64_t> db_snps_coords(OPTIMIZED_DB_SNPS_COORDS);
-	const bool recompute_snps_coords = db_snps_coords.mmap_or_load(preload);
-	vector<uint64_t>& snps_coords = *db_snps_coords.getElementsVector();
+	// This encodes a list of all kmers, sorted in increasing order.  Each kmer is represented
+	// not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
+	// an index into the db_snps table above, and 5 bits representing the SNP position within
+	// the kmer.  This needs to be explained a little better;  see email (eventually docs).
+	DBIndex<uint32_t> db_kmer_index(
+		dbbase + "_optimized_db_kmers_" + to_string(M2) + ".bin",
+		db_filesize / 16
+	);
+	const auto recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
+	uint32_t* kmer_index = db_kmer_index.address();
+
+	// Bit vector with one presence/absence bit for every possible M3-bit kmer suffix (the M3
+	// LSBs of a kmer's nucleotide sequence).
+    DBIndex<uint64_t> db_mmer_bloom(
+		dbbase + "_optimized_db_mmer_bloom_" + to_string(M3) + ".bin",
+		(1 + MAX_BLOOM) / 64
+	);
+	const bool recompute_mmer_bloom = db_mmer_bloom.mmap_or_load(preload);
+	uint64_t* mmer_bloom = db_mmer_bloom.address();
+
+	// For every kmer in the original DB, the first L2 bits of the kmer's nucleotide sequence
+	// are called that kmer's lmer.  Kmers that share the same lmer occupy a range of consecutive
+	// positions in the kmer_index, and that range is lmer_index[lmer].
+	DBIndex<LmerRange> db_lmer_index(
+		dbbase + "_optimized_db_lmer_index" + to_string(L2) + ".bin",
+		1 + LMER_MASK
+	);
+	const bool recompute_lmer_index = db_lmer_index.mmap_or_load(preload);
+	LmerRange* lmer_index = db_lmer_index.address();
 
 	// FIXME
 	vector<SNPSeq> snps_seqs;
@@ -612,7 +637,7 @@ int main(int argc, char** argv) {
 	int fd = -1;
 	uint64_t* db_data = NULL;
 
-	if (recompute_mmer_present || recompute_lmer_indx || recompute_mmers || recompute_snps || recompute_snps_coords) {
+	if (recompute_mmer_bloom || recompute_lmer_index || recompute_kmer_index || recompute_snps) {
 		//Open file
 		fd = open(db_path, O_RDONLY, 0);
 		assert(fd != -1);
@@ -621,39 +646,48 @@ int main(int argc, char** argv) {
 		unordered_map<uint64_t, uint32_t> snps_map;
 		lmer_count = db_filesize ? 1 : 0;
 		for (uint64_t end = 0;  end < db_filesize / 8;  end += 2) {
-			const auto kmer = db_data[end];
+			const auto kmer = db_data[end + 1];
 			const auto lmer = kmer >> M2;
-			if (recompute_mmer_present) {
-				uint64_t mpres = kmer & MAX_PRESENT;
-				mmer_present[mpres / 64] |= ((uint64_t) 1) << (mpres % 64);
+			if (recompute_mmer_bloom) {
+				const uint64_t bloom_index = kmer & MAX_BLOOM;
+				mmer_bloom[bloom_index / 64] |= ((uint64_t) 1) << (bloom_index % 64);
 			}
-			if (recompute_mmers || recompute_snps || recompute_snps_coords) {
-				const auto snp = db_data[end + 1];
+			if (recompute_kmer_index || recompute_snps) {
+				const auto snp_with_offset = db_data[end];
+				const auto snp = snp_with_offset >> 8;
+				const auto offset = snp_with_offset & 0xff;
 				const auto map_entry = snps_map.find(snp);
 				uint32_t snp_id;
 				if (map_entry == snps_map.end()) {
 					snp_id = snps_map.size();
 					snps_map.insert({snp, snp_id});
-					if (recompute_snps_coords) {
-						snps_coords.push_back(snp);
+					if (recompute_snps) {
+						snps.push_back(SNPRepr(0, 0, snp));
 					}
 				} else {
 					snp_id = map_entry->second;
 				}
-				if (recompute_snps) {
-					snps[end / 2] = snp_id;
-				} else {
-					assert(snps[end / 2] == snp_id && "File optimized_db_snps.bin is out of date.");
-				}
-				if (recompute_mmers) {
-					assert(snp_id <= snps_seqs.size());
-					if (snp_id == snps_seqs.size()) {
-						// This is the first kmer we've encountered for the given snp.
-						snps_seqs.push_back(SNPSeq());
-					}
-					// Sigh.  This is like solving a crossword puzzle.
-					mmers[end / 2] = kmer_repr(kmer, snp, snp_id, snps_seqs[snp_id]);
-				}
+				assert(0 <= offset && offset < K && offset <= 31);
+				kmer_index[end / 2] = (snp_id << 5) || offset;
+				auto &snp_repr = snps[snp_id];
+				//
+				// A note on binary representation of nucleotide sequences.
+				//
+				//     kmer nucleotide 0 --> kmer binary bits 0, 1
+				//     kmer nucleotide 1 --> kmer binary bits 2, 3
+				//     ...
+				//     kmer nucleotide 30 --> kmer binary bits 61, 62
+				//
+				// If the SNP occurs in nucleotide "offset" of the kmer, then the
+				// kmer nucleotides starting with the SNP and following the SNP
+				// be nucleotides offset, offset + 1, ... and those would be encoded
+				// by kmer binary bits 2 * offset, 2 * offset + 1, ..., 62.  Those
+				// bits need to become the LSBs of snp_repr[1].  The other bits of
+				// the kmer binary representation need to become the MSBs of snp_repr[0].
+				// The 2 LSBs of snp_repr[1] always equal to 2 MSBs of snp_repr[0],
+				// as they represent the nucleotide at the SNP position.
+				get<0>(snp_repr) |= (kmer << (62 - (offset * BITS_PER_BASE)));
+				get<1>(snp_repr) |= (kmer >> (offset * BITS_PER_BASE));
 			}
 			if (end > 0 && lmer != last_lmer) {
 				start = end / 2;
@@ -664,41 +698,34 @@ int main(int argc, char** argv) {
 			const auto len = (end / 2) - start + 1;
 			assert(len < MAX_LEN);
 			assert(lmer <= LMER_MASK);
-			if (recompute_lmer_indx) {
-				lmer_indx[lmer] = (start << LEN_BITS) | len;
+			if (recompute_lmer_index) {
+				lmer_index[lmer] = (start << LEN_BITS) | len;
 			}
 			last_lmer = lmer;
 		}
 	}
 
-	if (recompute_lmer_indx) {
+	if (recompute_kmer_index || recompute_snps) {
+		db_snps.save();
+		db_kmer_index.save();
+	}
+
+	if (recompute_mmer_bloom) {
+		db_mmer_bloom.save();
+	}
+
+	if (recompute_lmer_index) {
 		db_lmer_index.save();
 	}
 
-	if (recompute_mmer_present) {
-		db_mmer_present.save();
-	}
-
-	if (recompute_mmers) {
-		db_mmers.save();
-	}
-
-	if (recompute_snps) {
-		db_snps.save();
-	}
-
-	if (recompute_snps_coords) {
-		db_snps_coords.save();
-	}
-
-	cerr << chrono_time() << ":  " << "Done with init for DB with " << (db_filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
+	cerr << chrono_time() << ":  " << "Done with init for DB with " << (db_filesize / 16) << " kmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	l_start = chrono_time();
 
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_indx, mmer_present, mmers, snps, db_snps_coords.address(), optind - in_pos, argv[optind], oname, M2, M3));
+		th_array.push_back(thread(kmer_lookup, lmer_index, mmer_bloom, kmer_index, db_snps.address(), optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
