@@ -17,8 +17,10 @@ using namespace std;
 // global variable declaration starts here
 constexpr auto K = 31;
 
-// NB:  On little-endian achitectures, the second field of a tuple is stored at a lower memory address
-// than the first field.  This memory layout is the exact opposite of what you get from a struct.
+// Data layout:
+//
+// On little-endian achitectures, the second field of a tuple is stored at a lower memory address
+// than the first field.  This layout is the exact opposite of what you get from a struct.
 //
 // The rationale behind the tuple layout is this:  The lexicographic sort order on tuples is the
 // same as the numeric sort order when the tuple's bits are interpreted as one giant integer.
@@ -38,16 +40,6 @@ long chrono_time() {
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-uint64_t bit_encode(const char c) {
-    switch (c) {
-    case 'A': return 0;
-    case 'C': return 1;
-    case 'G': return 2;
-    case 'T': return 3;
-    }
-    assert(false);
-}
-
 struct CodeDict {
     vector<int8_t> code_dict;
     int8_t* data;
@@ -57,10 +49,10 @@ struct CodeDict {
             // This helps us detect non-nucleotide characters on encoding.
             code_dict.push_back(-1);
         }
-        code_dict['A'] = code_dict['a'] = bit_encode('A');
-        code_dict['C'] = code_dict['c'] = bit_encode('C');
-        code_dict['G'] = code_dict['g'] = bit_encode('G');
-        code_dict['T'] = code_dict['t'] = bit_encode('T');
+        code_dict['A'] = code_dict['a'] = 0;
+        code_dict['C'] = code_dict['c'] = 1;
+        code_dict['G'] = code_dict['g'] = 2;
+        code_dict['T'] = code_dict['t'] = 3;
         data = code_dict.data();
     }
 };
@@ -79,6 +71,42 @@ uint64_t seq_encode(const char* buf) {
     return seq_code;
 }
 
+
+// INPUT:  A sckmers.tsv file with content like:
+//
+// ...
+// 343 25  TGGATACCACGGCGCAAGAGCACGCACAGAA TGGATACCACGGCGCAAGAGCACGCGCAGAA TTCTGTGCGTGCTCTTGCGCCGTGGTATCCA TTCTGCGCGTGCTCTTGCGCCGTGGTATCCA 1   11  259564  8   3
+// 343 24  GGATACCACGGCGCAAGAGCACGCACAGAAT GGATACCACGGCGCAAGAGCACGCGCAGAAT ATTCTGTGCGTGCTCTTGCGCCGTGGTATCC ATTCTGCGCGTGCTCTTGCGCCGTGGTATCC 1   11  259564  8   3
+// ...
+//
+// where each line contains, in this order:
+//
+//      $1 - genomic position of SNP
+//      $2 - zero-based offset of SNP in forward 31-mer
+//      $3 - forward 31-mer covering the SNP's major allele
+//      $4 - forward 31-mer covering the SNP's minor allele
+//      $5 - reverse complement of $3
+//      $6 - reverse complement of $4
+//      $7 - unused
+//      $8 - unused
+//      $9 - 6 decimal digit species ID
+//      $10 - unused
+//
+//  a "snp coordinate" is obtained by concatenating the following character strings and
+//  converting the result back to an integer:
+//
+//      * the 6 decimal digit species id (input column $8),
+//
+//      * a single digit allele type:
+//           (0 = major allele, matching input $3 and $5,
+//            1 = minor allele, matching input $4 and $6),
+//
+//      * genomic position of SNP (input column $1)
+//
+
+
+
+// FIXME :  Wrong number of lines in sckmer profile tsv
 void bit_load(const char* k_path, vector<KmerData>& result) {
 
     assert(k_path);
@@ -94,7 +122,8 @@ void bit_load(const char* k_path, vector<KmerData>& result) {
         size_t size;
         ssize_t len;
         int sep;
-        Column(int separator) : c_str(NULL), size(0), len(0), sep(separator) {};
+        const char* name;
+        Column(const char* name, int separator) : c_str(NULL), size(0), len(0), sep(separator), name(name) {};
         ~Column() {
             if (c_str) {
                 free(c_str);
@@ -124,33 +153,63 @@ void bit_load(const char* k_path, vector<KmerData>& result) {
         }
     };
 
-    Column cols[] = { Column('\t'), Column('\t'), Column('\n') };
+    Column cols[] = {
+        Column("snp_genomic_position", '\t'),
+        Column("snp_offset_in_forward_kmer", '\t'),
+        Column("forward_kmer_major_allele", '\t'),
+        Column("forward_kmer_minor_allele", '\t'),
+        Column("reverse_complement_kmer_major_allele", '\t'),
+        Column("reverse_complement_kmer_minor_allele", '\t'),
+        Column("unused", '\t'),
+        Column("unused", '\t'),
+        Column("unused", '\t'),
+        Column("genome_id", '\n')
+    };
+
+    auto kmer_columns = {2, 3, 4, 5};
+
+    auto& c_snp_genomic_position = cols[0];
+    auto& c_snp_offset_in_forward_kmer = cols[1];
+    auto& c_genome_id = cols[9];
 
     while (true) {
+        bool no_column_is_empty = true;
         for (auto& c : cols) {
             c.read_from_file(fp);
+            no_column_is_empty = no_column_is_empty && c.len > 0;
         }
-        const bool end_of_file = cols[0].len < 0;
-        const bool some_columns_empty = cols[0].len <= 0 || cols[1].len <= 0 || cols[2].len <= 0;
-        assert(some_columns_empty == end_of_file && "Every line should have 3 non-empty columns, separated by tabs.");
-        if (end_of_file) {
+        if (cols[0].len < 0) {
+            // end of file
             break;
         }
-        assert(cols[0].len == K && "First column needs to be a K-mer (contain exactly K characters)");
-        assert(cols[1].len <= 2 && cols[1].is_numeric() && "Second column needs to be decimal with at most 2 digits.");
-        assert(cols[2].len <= 16 && cols[2].is_numeric() && "Third and last column needs to be decimal with at most 16 digits.");
-        const auto offset = strtoul(cols[1].c_str, NULL, 10);
-        assert(offset >= 0 && offset < K && "Second column needs to be decimal in range 0 .. K-1, inclusive.");
-        const uint64_t snp_sans_offset = strtoull(cols[2].c_str, NULL, 10);
-        // 16 decimal digits fit into 56 bits, so we have 8 bits left to encode the snp_offset.
-        // We only need 5 bits for that, but let's take 8 to save space for future extensions.
-        // Note that just from the snp_with_offset we could recover the kmer if we have the reference genome.
-        assert(snp_sans_offset < (1ULL << 56));
-        assert(offset < (1ULL << 8));
-        const uint64_t snp_with_offset = (snp_sans_offset << 8) | offset;
-        if (cols[0].does_not_contain_wildcard()) {
-            auto kmer = seq_encode<K>(cols[0].c_str);
-            result.push_back(KmerData(kmer, snp_with_offset));
+        assert(no_column_is_empty && "Empty columnns are not allowed.");
+        for (auto kc : kmer_columns) {
+            assert(cols[kc].len == K && "Kmer column must contain exactly K characters");
+        }
+        assert(c_snp_genomic_position.len <= 9 &&
+               c_snp_genomic_position.is_numeric() &&
+               "First column (snp_genomic_position) needs to be decimal with at most 9 digits.");
+        assert(c_snp_offset_in_forward_kmer.len <= 2 &&
+               c_snp_offset_in_forward_kmer.is_numeric() &&
+               "Second column (snp_offset_within_forward_kmer) needs to be decimal with at most 2 digits.");
+        assert(c_genome_id.len == 6 &&
+               c_genome_id.is_numeric() &&
+               "Eighth column (genome_id) needs to be decimal with exactly 6 digits.");
+        const auto forward_offset = strtoul(c_snp_offset_in_forward_kmer.c_str, NULL, 10);
+        assert(forward_offset >= 0 && forward_offset < K && "Second column (snp_offset_within_forward_kmer) needs to be decimal in range 0 .. K-1, inclusive.");
+        for (auto kc : kmer_columns) {
+            const char* allele_c_str = kc % 2 ? "1" : "0";  // "0" - major, "1" - minor
+            const int reverse_complement = ((kc - 2) / 2) % 2;  // 0 - forward, 1 - reverse complement
+            const int offset = reverse_complement ? (K - 1 - forward_offset) : forward_offset;
+            const string snp_coord_str = string(c_genome_id.c_str) + allele_c_str + c_snp_genomic_position.c_str;
+            const uint64_t snp_coord = strtoull(snp_coord_str.c_str(), NULL, 10);
+            // 16 decimal digits fit into 56 bits, so we have 8 bits left to encode the rc and snp_offset.
+            assert(snp_coord < (1ULL << 56));
+            assert(offset < (1ULL << 7));
+            // Note that just from the snp_with_rc_and_offset we could recover the kmer if we have the reference genome.
+            const uint64_t snp_with_rc_and_offset = (snp_coord << 8) | (reverse_complement << 7) | offset;
+            auto kmer = seq_encode<K>(cols[kc].c_str);
+            result.push_back(KmerData(kmer, snp_with_rc_and_offset));
         }
     }
 }
@@ -159,7 +218,7 @@ inline uint64_t get_kmer(const KmerData& kmer_data) {
     return get<0>(kmer_data);
 }
 
-inline uint64_t get_snp_with_offset(const KmerData& kmer_data) {
+inline uint64_t get_snp_with_rc_and_offset(const KmerData& kmer_data) {
     return get<1>(kmer_data);
 }
 

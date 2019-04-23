@@ -59,7 +59,8 @@ constexpr auto LEN_BITS = 64 - START_BITS;
 constexpr auto MAX_START = (LSB << START_BITS) - LSB;
 constexpr auto MAX_LEN = (LSB << LEN_BITS) - LSB;
 
-// element 0, 1:  61-bp nucleotide sequence centered on SNP.
+// element 0, 1:  61-bp nucleotide sequence centered on SNP, for a more detailed map please see
+// the comment "note on the binary representation of nucleotide sequences" below.
 // element 2:  SNP coordinates consisting of species ID, major/minor allele bit, and genomic position.
 using SNPRepr = tuple<uint64_t, uint64_t, uint64_t>;
 
@@ -77,56 +78,35 @@ size_t get_fsize(const char* filename) {
 	return st.st_size;
 }
 
-uint8_t bit_encode(const char c) {
-	switch (c) {
-		case 'A': case 'a': return 0;
-		case 'C': case 'c': return 1;
-		case 'G': case 'g': return 2;
-		case 'T': case 't': return 3;
-	}
-	assert(false);
-}
+struct CodeDict {
+    vector<uint8_t> code_dict;
+    uint8_t* data;
+    CodeDict() {
+        constexpr auto CHAR_LIMIT = 1 << (sizeof(char) * 8);
+        for (uint64_t c = 0; c < CHAR_LIMIT; ++c) {
+            // This helps us detect non-nucleotide characters on encoding.
+            code_dict.push_back(0xff);
+        }
+        code_dict['A'] = code_dict['a'] = 0;
+        code_dict['C'] = code_dict['c'] = 1;
+        code_dict['G'] = code_dict['g'] = 2;
+        code_dict['T'] = code_dict['t'] = 3;
+        data = code_dict.data();
+    }
+};
+const CodeDict code_dict;
 
-char bit_decode(const uint8_t bit_code) {
-	switch (bit_code) {
-		case 0: return 'A';
-		case 1: return 'C';
-		case 2: return 'G';
-		case 3: return 'T';
-	}
-	assert(false);
-}
-
-void make_code_dict(uint8_t* code_dict) {
-	code_dict['A'] = bit_encode('A');
-	code_dict['a'] = bit_encode('a');
-	code_dict['C'] = bit_encode('C');
-	code_dict['c'] = bit_encode('c');
-	code_dict['G'] = bit_encode('G');
-	code_dict['g'] = bit_encode('g');
-	code_dict['T'] = bit_encode('T');
-	code_dict['t'] = bit_encode('t');
-}
-
+// see the comment "note on the binary representation of nucleotide sequences" below.
 template <class int_type, int len>
-int_type seq_encode(const char* buf, const uint8_t* code_dict) {
+int_type seq_encode(const char* buf) {
 	int_type seq_code = 0;
 	// This loop may be unrolled by the compiler because len is a compile-time constant.
 	for (int bitpos = 0;  bitpos < len;  bitpos += BITS_PER_BASE) {
-		const int_type b_code = code_dict[*buf++];
-		seq_code |= (b_code << bitpos);
+		const uint8_t b_code = code_dict.data[*buf++];
+		assert((b_code & 0xfc) == 0);
+		seq_code |= (((int_type) b_code) << bitpos);
 	}
 	return seq_code;
-}
-
-template <class int_type>
-void seq_decode(char* buf, const int len, const int_type seq_code) {
-	constexpr uint8_t B_MASK = (1 << BITS_PER_BASE) - 1;
-	for (int i=0;  i < len - 1;  ++i) {
-		const uint8_t b_code = B_MASK & (seq_code >> (BITS_PER_BASE * (len - i - 2)));
-		buf[i] = bit_decode(b_code);
-	}
-	buf[len - 1] = '\0';
 }
 
 long chrono_time() {
@@ -143,9 +123,6 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 
 	const uint64_t MAX_BLOOM = (LSB << M3) - LSB;
     constexpr int XX = (M3 + 1) / 2;  // number DNA letters to cover MAX_BLOOM
-
-	uint8_t code_dict[1 << (sizeof(char) * 8)];
-	make_code_dict(code_dict);
 
 	auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
 
@@ -234,11 +211,11 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX, code_dict) & MAX_BLOOM;
+					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX) & MAX_BLOOM;
 					const auto mpres = mmer_bloom[mmer_pres / 64] >> (mmer_pres % 64);
 
 					if (mpres & 1) {
-						const auto kmer = seq_encode<uint64_t, K>(seq_buf + j, code_dict);
+						const auto kmer = seq_encode<uint64_t, K>(seq_buf + j);
 						const uint32_t lmer = kmer >> M2;
 						const auto range = lmer_index[lmer];
 						const auto start = range >> LEN_BITS;
@@ -249,9 +226,9 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 							const auto offset = kmi & 0x1f;
 							const auto snp_id = kmi >> 5;
 							const auto& snps_repr = snps[snp_id];
-							const auto high = get<1>(snps_repr) << (offset * BITS_PER_BASE);
-							const auto low = get<0>(snps_repr) >> (62 - (offset * BITS_PER_BASE));
-							const auto db_kmer = (high | low) & BIT_MASK;
+							const auto low_bits = get<0>(snps_repr) >> (62 - (offset * BITS_PER_BASE));
+							const auto high_bits = get<1>(snps_repr) << (offset * BITS_PER_BASE);
+							const auto db_kmer = (high_bits | low_bits) & BIT_MASK;
 							if (kmer == db_kmer) {
 								if (footprint.find(snp_id) == footprint.end()) {
 									kmer_matches.push_back(snp_id);
@@ -302,8 +279,6 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 			} else {
 				++cur_count;
 			}
-			// seq_decode(dcd_buf, k, it->first, code_dict, b_mask);
-			// fh << *it << "\t" << *(it+1) << "\n";
 		}
 	}
 	cerr << chrono_time() << ":  " << "Completed output for " << in_path << endl;
@@ -317,43 +292,42 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 void kmer_lookup(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, SNPRepr* snps, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
 	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
-	bool match = false;
+	bool match = (
+			    kmer_lookup_work<32, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<32, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<32, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<32, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<32, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<32, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
-	match = match || kmer_lookup_work<32, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<32, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	         || kmer_lookup_work<33, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<33, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<33, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<33, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<33, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<33, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
-	match = match || kmer_lookup_work<33, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<33, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	         || kmer_lookup_work<34, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<34, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<34, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<34, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<34, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<34, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
-	match = match || kmer_lookup_work<34, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<34, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
+	         || kmer_lookup_work<35, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<35, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<35, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<35, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<35, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<35, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
-	match = match || kmer_lookup_work<35, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<35, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-
-	match = match || kmer_lookup_work<36, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-	match = match || kmer_lookup_work<36, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3);
-
+	         || kmer_lookup_work<36, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<36, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<36, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<36, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<36, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	         || kmer_lookup_work<36, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+	);
 	assert(match && "See comment for supporrted values of L and M.");
 }
 
@@ -599,16 +573,13 @@ int main(int argc, char** argv) {
 	// not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
 	// an index into the db_snps table above, and 5 bits representing the SNP position within
 	// the kmer.  This needs to be explained a little better;  see email (eventually docs).
-	DBIndex<uint32_t> db_kmer_index(
-		dbbase + "_optimized_db_kmers_" + to_string(M2) + ".bin",
-		db_filesize / 16
-	);
-	const auto recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
-	uint32_t* kmer_index = db_kmer_index.address();
+	DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index_" + to_string(M2) + ".bin");
+	const bool recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
+	vector<uint32_t>& kmer_index = *db_kmer_index.getElementsVector();
 
 	// Bit vector with one presence/absence bit for every possible M3-bit kmer suffix (the M3
 	// LSBs of a kmer's nucleotide sequence).
-    DBIndex<uint64_t> db_mmer_bloom(
+	DBIndex<uint64_t> db_mmer_bloom(
 		dbbase + "_optimized_db_mmer_bloom_" + to_string(M3) + ".bin",
 		(1 + MAX_BLOOM) / 64
 	);
@@ -619,15 +590,14 @@ int main(int argc, char** argv) {
 	// are called that kmer's lmer.  Kmers that share the same lmer occupy a range of consecutive
 	// positions in the kmer_index, and that range is lmer_index[lmer].
 	DBIndex<LmerRange> db_lmer_index(
-		dbbase + "_optimized_db_lmer_index" + to_string(L2) + ".bin",
+		dbbase + "_optimized_db_lmer_index_" + to_string(L2) + ".bin",
 		1 + LMER_MASK
 	);
 	const bool recompute_lmer_index = db_lmer_index.mmap_or_load(preload);
 	LmerRange* lmer_index = db_lmer_index.address();
 
-	// FIXME
-	vector<SNPSeq> snps_seqs;
-	assert(false);
+	assert(recompute_kmer_index == recompute_snps && "Please delete both optimized_db_kmers_index.bin and optimized_db_snps.bin.");
+	const bool recompute_kmer_index_and_snps = recompute_kmer_index || recompute_snps;
 
 	uint64_t last_lmer;
 	uint64_t start = 0;
@@ -637,22 +607,23 @@ int main(int argc, char** argv) {
 	int fd = -1;
 	uint64_t* db_data = NULL;
 
-	if (recompute_mmer_bloom || recompute_lmer_index || recompute_kmer_index || recompute_snps) {
+	if (recompute_mmer_bloom || recompute_lmer_index || recompute_kmer_index_and_snps) {
 		//Open file
 		fd = open(db_path, O_RDONLY, 0);
 		assert(fd != -1);
 		db_data = (uint64_t *) mmap(NULL, db_filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 		assert(db_data != MAP_FAILED);
 		unordered_map<uint64_t, uint32_t> snps_map;
+		vector<tuple<uint64_t, uint64_t>> snps_known_bits;  // not persisted, just for integrity checking during construction
 		lmer_count = db_filesize ? 1 : 0;
-		for (uint64_t end = 0;  end < db_filesize / 8;  end += 2) {
+		for (uint64_t end = 0;  end < 20*1000*1000/*db_filesize / 8*/;  end += 2) {
 			const auto kmer = db_data[end + 1];
 			const auto lmer = kmer >> M2;
 			if (recompute_mmer_bloom) {
 				const uint64_t bloom_index = kmer & MAX_BLOOM;
 				mmer_bloom[bloom_index / 64] |= ((uint64_t) 1) << (bloom_index % 64);
 			}
-			if (recompute_kmer_index || recompute_snps) {
+			if (recompute_kmer_index_and_snps) {
 				const auto snp_with_offset = db_data[end];
 				const auto snp = snp_with_offset >> 8;
 				const auto offset = snp_with_offset & 0xff;
@@ -661,33 +632,94 @@ int main(int argc, char** argv) {
 				if (map_entry == snps_map.end()) {
 					snp_id = snps_map.size();
 					snps_map.insert({snp, snp_id});
-					if (recompute_snps) {
-						snps.push_back(SNPRepr(0, 0, snp));
-					}
+					snps.push_back(SNPRepr(0, 0, snp));
+					snps_known_bits.push_back(tuple<uint64_t, uint64_t>(0,0));
 				} else {
 					snp_id = map_entry->second;
 				}
 				assert(0 <= offset && offset < K && offset <= 31);
-				kmer_index[end / 2] = (snp_id << 5) || offset;
+				assert(snp_id < (1 << 27) && "Too many SNPs in database.");
+				const auto kmer_repr = (snp_id << 5) || offset;
+				kmer_index.push_back(kmer_repr);
 				auto &snp_repr = snps[snp_id];
+				auto &snp_known_bits_mask = snps_known_bits[snp_id];
 				//
-				// A note on binary representation of nucleotide sequences.
+				// A note on the binary representation of nucleotide sequences.
 				//
 				//     kmer nucleotide 0 --> kmer binary bits 0, 1
 				//     kmer nucleotide 1 --> kmer binary bits 2, 3
 				//     ...
 				//     kmer nucleotide 30 --> kmer binary bits 61, 62
 				//
-				// If the SNP occurs in nucleotide "offset" of the kmer, then the
-				// kmer nucleotides starting with the SNP and following the SNP
-				// be nucleotides offset, offset + 1, ... and those would be encoded
-				// by kmer binary bits 2 * offset, 2 * offset + 1, ..., 62.  Those
-				// bits need to become the LSBs of snp_repr[1].  The other bits of
-				// the kmer binary representation need to become the MSBs of snp_repr[0].
-				// The 2 LSBs of snp_repr[1] always equal to 2 MSBs of snp_repr[0],
-				// as they represent the nucleotide at the SNP position.
-				get<0>(snp_repr) |= (kmer << (62 - (offset * BITS_PER_BASE)));
-				get<1>(snp_repr) |= (kmer >> (offset * BITS_PER_BASE));
+				// The SNP position splits the kmer into low_bits and high_bits.
+				//
+				// Assuming the SNP is at position "offset" in kmer, the kmer
+				// nucleotides at positions offset, offset + 1, ...  would be encoded
+				// by kmer binary bits at 2 * offset, 2 * offset + 1, ..., 62.  These
+				// "high_bits" of the kmer form the LSBs of snp_repr[1].
+				//
+				// Conversely, the "low_bits" of the kmer binary representation, namely
+				// bits 0, 1, ..., 2 * offset, 2 * offset + 1 form the MSBs of snp_repr[0].
+				//
+				// Note the nucleotide at the SNP position is redundantly represented,
+				// being included in both the high_bits and the low_bits.  Thus,
+				// the 2 LSBs of snp_repr[1] always equal the 2 MSBs of snp_repr[0].
+				// This is intended as a partial correctnes check.
+				//
+				// The 2 LSBs of snp_repr[0] and the 2 MSBs of snp_repr[1] are unused,
+				// and available for future extensions.
+				//
+				// As we construct snp_repr from kmers, we note which of the snp_repr bits
+				// have been initialized so far, because future kmers for the snp must
+				// agree with past kmers on those bits.  This is only a correctness check.
+				// We do not persist these coverage masks to file.
+				//
+				// Finally, after we have constructed the optimized DB, we use it to reconstruct
+				// from that the original DB, and compare to the original.  That is the final
+				// and most definitive correctness self-check.
+				//
+				static_assert(sizeof(kmer) * 8 == 64);
+				const auto low_bits = kmer << (62 - (offset * BITS_PER_BASE));
+				const auto high_bits = kmer >> (offset * BITS_PER_BASE);
+				assert(((low_bits >> 62) == (high_bits & 0x3)) && "SNP position differs in two supposedly redundant representations.");
+				auto& snp_mask_0 = get<0>(snp_known_bits_mask);
+				auto& snp_mask_1 = get<1>(snp_known_bits_mask);
+				constexpr auto FULL_KMER = (LSB << K2) - LSB;
+				// We've added information to the snp_repr.  Extend the coverage masks.
+				const auto kmer_mask_0 = (FULL_KMER << (62 - (offset * BITS_PER_BASE)));
+				const auto kmer_mask_1 = (FULL_KMER >> (offset * BITS_PER_BASE));
+				const auto mask_0 = snp_mask_0 & kmer_mask_0;
+				const auto mask_1 = snp_mask_1 & kmer_mask_1;
+				if (snp_id == 5341 || ((mask_0 & get<0>(snp_repr)) != (mask_0 & low_bits))) {
+					cerr << chrono_time() << ":  SNP " << snp_id << "(" << get<2>(snp_repr) << ")" << endl;
+					cerr << chrono_time() << ":  most recent kmer 0x" << hex << kmer << dec << endl;
+					cerr << chrono_time() << ":  " << endl;
+
+					cerr << chrono_time() << ":  kmer[snp]: " << bitset<64>((LSB << offset * 2) | (LSB << (2 * offset + 1))) << endl;
+					cerr << chrono_time() << ":  kmerbits:  " << bitset<64>(kmer) << endl;
+					cerr << chrono_time() << ":  " << endl;
+
+					cerr << chrono_time() << ":  lowbits:   " << bitset<64>(low_bits) << endl;
+					cerr << chrono_time() << ":  kmer_mask0:" << bitset<64>(kmer_mask_0) << endl;
+					cerr << chrono_time() << ":  mask0:     " << bitset<64>(snp_mask_0) << endl;
+					cerr << chrono_time() << ":  snprepr0:  " << bitset<64>(get<0>(snp_repr)) << endl;
+					cerr << chrono_time() << ":  " << endl;
+
+					cerr << chrono_time() << ":  highbits:  " << bitset<64>(high_bits) << endl;
+					cerr << chrono_time() << ":  kmer_mask1:" << bitset<64>(kmer_mask_1) << endl;
+					cerr << chrono_time() << ":  mask1:     " << bitset<64>(snp_mask_1) << endl;
+					cerr << chrono_time() << ":  snprepr1:  " << bitset<64>(get<1>(snp_repr)) << endl;
+					if (((mask_0 & get<0>(snp_repr)) != (mask_0 & low_bits))) {
+						cerr << "ERROR:  SNP above covered by conflicting kmers." << endl;
+						assert(false);
+					}
+				}
+				assert(((mask_1 & get<1>(snp_repr)) == (mask_1 & high_bits))  && "SNP covered by conflicting kmers");
+				get<0>(snp_repr) |= low_bits;
+				get<1>(snp_repr) |= high_bits;
+				// We've added information to the snp_repr.  Extend the coverage masks.
+				snp_mask_0 |= kmer_mask_0;
+				snp_mask_1 |= kmer_mask_1;
 			}
 			if (end > 0 && lmer != last_lmer) {
 				start = end / 2;
@@ -703,9 +735,25 @@ int main(int argc, char** argv) {
 			}
 			last_lmer = lmer;
 		}
+		cerr << chrono_time() << ":  Validating optimized DB against original DB." << endl;
+		assert(snps.size() == snps_map.size());
+		for (uint64_t end = 0;  end < 20*1000*1000 /* db_filesize / 8 */;  end += 2) {
+			const auto db_kmer = db_data[end + 1];
+			const auto kmi = kmer_index[end / 2];
+			const auto offset = kmi & 0x1f;
+			const auto snp_id = kmi >> 5;
+			assert(0 <= offset && offset < 31 && offset < K);
+			assert(0 <= snp_id && snp_id <= snps.size());
+			const auto& snp_repr = snps[snp_id];
+			const auto low_bits = get<0>(snp_repr) >> (62 - (offset * BITS_PER_BASE));
+			const auto high_bits = get<1>(snp_repr) << (offset * BITS_PER_BASE);
+			assert(((get<0>(snp_repr) >> 62) == (get<1>(snp_repr) & 0x3)) && "SNP position differs in two supposedly redundant representations.");
+			const auto kmer = (high_bits | low_bits) & BIT_MASK;
+			assert(kmer == db_kmer);
+		}
 	}
 
-	if (recompute_kmer_index || recompute_snps) {
+	if (recompute_kmer_index_and_snps) {
 		db_snps.save();
 		db_kmer_index.save();
 	}
@@ -725,7 +773,7 @@ int main(int argc, char** argv) {
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_index, mmer_bloom, kmer_index, db_snps.address(), optind - in_pos, argv[optind], oname, M2, M3));
+		th_array.push_back(thread(kmer_lookup, lmer_index, mmer_bloom, db_kmer_index.address(), db_snps.address(), optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
