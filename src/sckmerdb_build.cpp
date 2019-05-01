@@ -163,7 +163,9 @@ void bit_load(const char* k_path, vector<KmerData>& result) {
         Column("unused", '\t'),
         Column("unused", '\t'),
         Column("unused", '\t'),
-        Column("genome_id", '\n')
+        Column("genome_id", '\t'),
+        Column("unused", '\t'),
+        Column("unused", '\n')
     };
 
     auto kmer_columns = {2, 3, 4, 5};
@@ -194,7 +196,7 @@ void bit_load(const char* k_path, vector<KmerData>& result) {
                "Second column (snp_offset_within_forward_kmer) needs to be decimal with at most 2 digits.");
         assert(c_genome_id.len == 6 &&
                c_genome_id.is_numeric() &&
-               "Eighth column (genome_id) needs to be decimal with exactly 6 digits.");
+               "Tenth column (genome_id) needs to be decimal with exactly 6 digits.");
         const auto forward_offset = strtoul(c_snp_offset_in_forward_kmer.c_str, NULL, 10);
         assert(forward_offset >= 0 && forward_offset < K && "Second column (snp_offset_within_forward_kmer) needs to be decimal in range 0 .. K-1, inclusive.");
         for (auto kc : kmer_columns) {
