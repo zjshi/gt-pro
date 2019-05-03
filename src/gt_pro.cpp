@@ -62,7 +62,7 @@ constexpr auto MAX_LEN = (LSB << LEN_BITS) - LSB;
 // element 0, 1:  61-bp nucleotide sequence centered on SNP, for a more detailed map please see
 // the comment "note on the binary representation of nucleotide sequences" below.
 // element 2:  SNP coordinates consisting of species ID, major/minor allele bit, and genomic position.
-using SNPRepr = tuple<uint64_t, uint64_t, uint64_t>;
+// using SNPRepr = uint64_t[3];
 
 // This param is only useful for perf testing.  The setting below, not
 // to exceed 64 TB of RAM, is equivalent to infinity in 2019.
@@ -117,7 +117,7 @@ long chrono_time() {
 }
 
 template <int M2, int M3>
-bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, SNPRepr* snps, int channel, char* in_path, char* o_name, int aM2, int aM3) {
+bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, uint64_t* snps, int channel, char* in_path, char* o_name, int aM2, int aM3) {
 
 	if (aM2 != M2 || aM3 != M3) {
 		return false;
@@ -215,23 +215,17 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 
 
 					// TODO:  Deduplicate forward and RC.
-					uint64_t mmer_pres_tuple[2];
-					seq_encode<uint64_t, XX>(mmer_pres_tuple, seq_buf + j);
-					const uint64_t mmer_pres_flags [] = {
-						mmer_pres_tuple[0] & MAX_BLOOM,
-						mmer_pres_tuple[1] & MAX_BLOOM
-					};
-					const bool mpres[] = {
-						(mmer_bloom[mmer_pres_flags[0] / 64] >> (mmer_pres_flags[0] % 64)) & 1,
-						(mmer_bloom[mmer_pres_flags[1] / 64] >> (mmer_pres_flags[1] % 64)) & 1
-					};
-					if (true || mpres[0] || mpres[1]) {
+					uint64_t mmer_pres[2];
+					seq_encode<uint64_t, XX>(mmer_pres, seq_buf + j);
+					auto mpres = (
+						(((mmer_bloom[(mmer_pres[1] & MAX_BLOOM) / 64] >> (mmer_pres[0] % 64)) & 1) << 1) |
+						 ((mmer_bloom[(mmer_pres[0] & MAX_BLOOM) / 64] >> (mmer_pres[1] % 64)) & 1)
+					);
+					if (true || mpres) {
 						uint64_t kmer_tuple[2];
 						seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
-						int i = -1;
 						for (const auto& kmer: kmer_tuple) {
-							++i;
-							if (true || mpres[i]) {
+							if (true || (mpres & 1)) {
 								const uint32_t lmer = kmer >> M2;
 								const auto range = lmer_index[lmer];
 								const auto start = range >> LEN_BITS;
@@ -241,9 +235,9 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 									const auto kmi = kmers_index[z];
 									const auto offset = kmi & 0x1f;
 									const auto snp_id = kmi >> 5;
-									const auto& snp_repr = snps[snp_id];
-									const auto low_bits = get<0>(snp_repr) >> (62 - (offset * BITS_PER_BASE));
-									const auto high_bits = (get<1>(snp_repr) << (offset * BITS_PER_BASE)) & BIT_MASK;
+									const auto* snp_repr = snps + 3 * snp_id;
+									const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
+									const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
 									const auto db_kmer = high_bits | low_bits;
 									if (true || kmer == db_kmer) {
 										if (footprint.find(snp_id) == footprint.end()) {
@@ -255,6 +249,7 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 									}
 								}
 							}
+							mpres >>= 1;
 						}
 					}
 				}
@@ -282,7 +277,7 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 		cerr << chrono_time() << ":  " << "zero hits" << endl;
 	} else {
 		for (int i=0;  i<kmer_matches.size();  ++i) {
-			kmer_matches[i] = get<2>(snps[kmer_matches[i]]);
+			kmer_matches[i] = snps[3 * kmer_matches[i] + 2];
 		}
 		sort(kmer_matches.begin(), kmer_matches.end());
 		// FIXME.  The loop below doesn't output the last SNP.
@@ -307,7 +302,7 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 }
 
 
-void kmer_lookup(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, SNPRepr* snps, int channel, char* in_path, char* o_name, int M2, const int M3) {
+void kmer_lookup(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, uint64_t* snps, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
 	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
 	bool match = (
@@ -583,9 +578,9 @@ int main(int argc, char** argv) {
 	// for each SNP in addition to the 56-bits mentioned above it also shows the
 	// sequence of 61bp centered on the SNP inferred from all kmers in the original DB.
     // This needs to be explained a little better;  see email (eventually docs).
-	DBIndex<SNPRepr> db_snps(dbbase + "_optimized_db_snps.bin");
+	DBIndex<uint64_t> db_snps(dbbase + "_optimized_db_snps.bin");
 	const bool recompute_snps = db_snps.mmap_or_load(preload);
-	vector<SNPRepr>& snps = *db_snps.getElementsVector();
+	vector<uint64_t>& snps = *db_snps.getElementsVector();
 
 	// This encodes a list of all kmers, sorted in increasing order.  Each kmer is represented
 	// not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
@@ -673,7 +668,9 @@ int main(int argc, char** argv) {
 				snps_map.insert({snp, snp_id});
 				// Danger:  dropping DB contents.  We will warn again in the end.
 				if (snp_id < MAX_SNPS) {
-					snps.push_back(SNPRepr(0, 0, snp));
+					snps.push_back(0);
+					snps.push_back(0);
+					snps.push_back(snp);
 					snps_known_bits.push_back(tuple<uint64_t, uint64_t>(0,0));
 				}
 			} else {
@@ -686,7 +683,7 @@ int main(int argc, char** argv) {
 			assert(0 <= offset && offset < K && offset <= 31);
 			const auto kmer_repr = (snp_id << 5) | offset;
 			kmer_index.push_back(kmer_repr);
-			auto &snp_repr = snps[snp_id];
+			auto* snp_repr = &(snps[3 * snp_id]);
 			auto &snp_known_bits_mask = snps_known_bits[snp_id];
 			//
 			// The SNP position "offset" divides the kmer binary representation into
@@ -779,39 +776,16 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			const auto kmer_mask_1 = (FULL_KMER >> (offset * BITS_PER_BASE));
 			const auto mask_0 = snp_mask_0 & kmer_mask_0;
 			const auto mask_1 = snp_mask_1 & kmer_mask_1;
-			if (((mask_0 & get<0>(snp_repr)) != (mask_0 & low_bits))) {
-
-				cerr << "ERROR:  SNP covered by conflicting kmers." << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  SNP " << snp_id << "(" << get<2>(snp_repr) << ")" << endl;
-				cerr << chrono_time() << ":  most recent kmer 0x" << hex << kmer << dec << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  kmer[snp]: " << bitset<64>((LSB << offset * 2) | (LSB << (2 * offset + 1))) << endl;
-				cerr << chrono_time() << ":  kmerbits:  " << bitset<64>(kmer) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  lowbits:   " << bitset<64>(low_bits) << endl;
-				cerr << chrono_time() << ":  kmer_mask0:" << bitset<64>(kmer_mask_0) << endl;
-				cerr << chrono_time() << ":  mask0:     " << bitset<64>(snp_mask_0) << endl;
-				cerr << chrono_time() << ":  snprepr0:  " << bitset<64>(get<0>(snp_repr)) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  highbits:  " << bitset<64>(high_bits) << endl;
-				cerr << chrono_time() << ":  kmer_mask1:" << bitset<64>(kmer_mask_1) << endl;
-				cerr << chrono_time() << ":  mask1:     " << bitset<64>(snp_mask_1) << endl;
-				cerr << chrono_time() << ":  snprepr1:  " << bitset<64>(get<1>(snp_repr)) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				assert(false);
-			}
-			if (((mask_1 & get<1>(snp_repr)) != (mask_1 & high_bits))) {
+			if (((mask_0 & snp_repr[0]) != (mask_0 & low_bits))) {
 				cerr << "ERROR:  SNP covered by conflicting kmers." << endl;
 				assert(false);
 			}
-			get<0>(snp_repr) |= low_bits;
-			get<1>(snp_repr) |= high_bits;
+			if (((mask_1 & snp_repr[1]) != (mask_1 & high_bits))) {
+				cerr << "ERROR:  SNP covered by conflicting kmers." << endl;
+				assert(false);
+			}
+			snp_repr[0] |= low_bits;
+			snp_repr[1] |= high_bits;
 			// We've added information to the snp_repr.  Extend the coverage masks.
 			snp_mask_0 |= kmer_mask_0;
 			snp_mask_1 |= kmer_mask_1;
@@ -836,9 +810,9 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 		if (snps_map.size() >= MAX_SNPS) {
 			cerr << chrono_time() << ":  WARNING:  Dropped " << (snps_map.size() - MAX_SNPS) << " SNPs (" << int((snps_map.size() - MAX_SNPS) * 1000.0 / snps_map.size())/10.0 << " percent) from original DB because only " << MAX_SNPS << " SNPs can be stored in the optimized DB at this time." << endl;
 		}
-		cerr << chrono_time() << ":  Optimized DB contains " << snps.size() << " snps." << endl;
+		cerr << chrono_time() << ":  Optimized DB contains " << (snps.size() / 3) << " snps." << endl;
 		cerr << chrono_time() << ":  Validating optimized DB against original DB." << endl;
-		assert(snps.size() == min((uint64_t)MAX_SNPS, (uint64_t)(snps_map.size())));
+		assert((snps.size() / 3) == min((uint64_t)MAX_SNPS, (uint64_t)(snps_map.size())));
 		for (uint64_t end = 0, last_kmi=0;  (end < min(MAX_INPUT_DB_KMERS, db_filesize / 8)) && (last_kmi < MAX_KMERS);  end += 2) {
 			const auto snp_with_offset = db_data[end];
 			const auto snp = snp_with_offset >> 8;
@@ -861,34 +835,14 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			const auto snp_id = kmi >> 5;
 			assert(snp_id == db_snp_id);
 			assert(0 <= offset && offset < 31 && offset < K);
-			assert(0 <= snp_id && snp_id <= snps.size());
-			const auto& snp_repr = snps[snp_id];
-			const auto low_bits = get<0>(snp_repr) >> (62 - (offset * BITS_PER_BASE));
-			const auto high_bits = (get<1>(snp_repr) << (offset * BITS_PER_BASE)) & BIT_MASK;
-			assert(((get<0>(snp_repr) >> 62) == (get<1>(snp_repr) & 0x3)) && "SNP position differs in two supposedly redundant representations.");
+			assert(0 <= snp_id && snp_id <= (snps.size() / 3));
+			const auto* snp_repr = &(snps[3 * snp_id]);
+			const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
+			const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
+			assert(((snp_repr[0] >> 62) == (snp_repr[1] & 0x3)) && "SNP position differs in two supposedly redundant representations.");
 			const auto kmer = high_bits | low_bits;
 			if (kmer != db_kmer) {
 				cerr << chrono_time() << ":  ERROR:  Mismatch between original and reconstructed kmer at input DB position " << end << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  SNP " << snp_id << "(" << get<2>(snp_repr) << ")" << endl;
-				cerr << chrono_time() << ":  kmer_repr: " << bitset<32>(kmi) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  kmer[snp]: " << bitset<64>((LSB << offset * 2) | (LSB << (2 * offset + 1))) << endl;
-				cerr << chrono_time() << ":       kmer: " << bitset<64>(kmer) << endl;
-				cerr << chrono_time() << ":     dbkmer: " << bitset<64>(db_kmer) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-
-				cerr << chrono_time() << ":  lowbits:   " << bitset<64>(low_bits) << endl;
-				cerr << chrono_time() << ":  snprepr0:  " << bitset<64>(get<0>(snp_repr)) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
-				cerr << chrono_time() << ":  highbits:  " << bitset<64>(high_bits) << endl;
-				cerr << chrono_time() << ":  snprepr1:  " << bitset<64>(get<1>(snp_repr)) << endl;
-				cerr << chrono_time() << ":  " << endl;
-
 				assert(false);
 			}
 		}
