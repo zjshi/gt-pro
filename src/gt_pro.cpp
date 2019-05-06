@@ -102,7 +102,7 @@ void seq_encode(int_type* result, const char* buf) {
 	result[0] = 0;  // forward
 	result[1] = 0;  // rc
 	// This loop may be unrolled by the compiler because len is a compile-time constant.
-	for (int bitpos = 0;  bitpos < len;  bitpos += BITS_PER_BASE) {
+	for (int_type bitpos = 0;  bitpos < BITS_PER_BASE * len;  bitpos += BITS_PER_BASE) {
 		const uint8_t b_code = code_dict.data[*buf++];
 		assert((b_code & 0xfc) == 0);
 		result[0] |= (((int_type) b_code) << bitpos);
@@ -221,11 +221,11 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 						(((mmer_bloom[(mmer_pres[1] & MAX_BLOOM) / 64] >> (mmer_pres[0] % 64)) & 1) << 1) |
 						 ((mmer_bloom[(mmer_pres[0] & MAX_BLOOM) / 64] >> (mmer_pres[1] % 64)) & 1)
 					);
-					if (true || mpres) {
+					if (mpres) {
 						uint64_t kmer_tuple[2];
 						seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
 						for (const auto& kmer: kmer_tuple) {
-							if (true || (mpres & 1)) {
+							if (mpres & 1) {
 								const uint32_t lmer = kmer >> M2;
 								const auto range = lmer_index[lmer];
 								const auto start = range >> LEN_BITS;
@@ -239,7 +239,8 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 									const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
 									const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
 									const auto db_kmer = high_bits | low_bits;
-									if (true || kmer == db_kmer) {
+									assert(lmer == (db_kmer >> M2));
+									if (kmer == db_kmer) {
 										if (footprint.find(snp_id) == footprint.end()) {
 											kmer_matches.push_back(snp_id);
 											footprint.insert({snp_id, 1});
@@ -372,6 +373,15 @@ struct DBIndex {
 		return &(elements[0]);
 	}
 
+	uint64_t elementCount() {
+		assert(loaded_or_mmapped);
+		if (mmapped_data) {
+			return filesize / sizeof(ElementType);
+		} else {
+			return elements.size();
+		}
+	}
+
 	vector<ElementType>* getElementsVector() {
 		return &(elements);
 	}
@@ -452,7 +462,7 @@ private:
 			if (mmappedData != MAP_FAILED) {
 				mmapped_data = mmappedData;
 				loaded_or_mmapped = true;
-				cerr << chrono_time() << ":  MMAPPED " << filename << endl;
+				// cerr << chrono_time() << ":  MMAPPED " << filename << endl;
 			}
 		}
 	}
@@ -464,12 +474,8 @@ struct SNPSeq {
 	uint64_t high_64;
 };
 
-
-uint32_t kmer_repr(uint64_t kmer, uint64_t snp_coords, uint32_t snp_id, SNPSeq snp_seq) {
-}
-
-
 int main(int argc, char** argv) {
+
 	extern char *optarg;
 	extern int optind;
 
@@ -580,7 +586,6 @@ int main(int argc, char** argv) {
     // This needs to be explained a little better;  see email (eventually docs).
 	DBIndex<uint64_t> db_snps(dbbase + "_optimized_db_snps.bin");
 	const bool recompute_snps = db_snps.mmap_or_load(preload);
-	vector<uint64_t>& snps = *db_snps.getElementsVector();
 
 	// This encodes a list of all kmers, sorted in increasing order.  Each kmer is represented
 	// not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
@@ -588,7 +593,6 @@ int main(int argc, char** argv) {
 	// the kmer.  This needs to be explained a little better;  see email (eventually docs).
 	DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index_" + to_string(M2) + ".bin");
 	const bool recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
-	vector<uint32_t>& kmer_index = *db_kmer_index.getElementsVector();
 
 	// Bit vector with one presence/absence bit for every possible M3-bit kmer suffix (the M3
 	// LSBs of a kmer's nucleotide sequence).
@@ -597,7 +601,6 @@ int main(int argc, char** argv) {
 		(1 + MAX_BLOOM) / 64
 	);
 	const bool recompute_mmer_bloom = db_mmer_bloom.mmap_or_load(preload);
-	uint64_t* mmer_bloom = db_mmer_bloom.address();
 
 	// For every kmer in the original DB, the first L2 bits of the kmer's nucleotide sequence
 	// are called that kmer's lmer.  Kmers that share the same lmer occupy a range of consecutive
@@ -610,23 +613,16 @@ int main(int argc, char** argv) {
 	LmerRange* lmer_index = db_lmer_index.address();
 
 	assert(recompute_kmer_index == recompute_snps &&
-		   recompute_lmer_index == recompute_snps &&
-		   recompute_mmer_bloom == recompute_snps &&
-		   "Please delete all of the optimized DB bin files before recomputing any of them (todo: fix).");
+		   "Please delete all of the optimized DB bin files before recomputing any of them.");
 
 	const bool recompute_everything = recompute_kmer_index || recompute_snps || recompute_lmer_index || recompute_mmer_bloom;
-
-	uint64_t last_lmer;
-	uint64_t start = 0;
-
-	uint64_t lmer_count = -1;
 
 	int fd = -1;
 	uint64_t* db_data = NULL;
 
 	auto t_last_progress_update = chrono_time();
 
-	if (recompute_everything) {
+	if (recompute_kmer_index || recompute_snps) {
 		const auto MAX_SNPS = LSB << 27;  // sorry this is a hard constraint at the moment
 		const auto MAX_KMERS = LSB << 40;  // ~1 trillon
 		const auto MAX_INPUT_DB_KMERS = MAX_KMERS;
@@ -637,7 +633,8 @@ int main(int argc, char** argv) {
 		assert(db_data != MAP_FAILED);
 		unordered_map<uint64_t, uint32_t> snps_map;
 		vector<tuple<uint64_t, uint64_t>> snps_known_bits;  // not persisted, just for integrity checking during construction
-		lmer_count = db_filesize ? 1 : 0;
+		auto& kmer_index = *db_kmer_index.getElementsVector();
+		auto& snps = *db_snps.getElementsVector();
 		for (uint64_t end = 0;  (end < min(MAX_INPUT_DB_KMERS, db_filesize / 8)) && (kmer_index.size() < MAX_KMERS);  end += 2) {
 			if (((end + 2) % (20 * 1000 * 1000)) == 0 && (chrono_time() - t_last_progress_update >= 10*1000)) {
 				// print progress update every 10 million kmers / but not more often than every 10 seconds
@@ -645,7 +642,7 @@ int main(int argc, char** argv) {
 				const auto t_elapsed = t_last_progress_update - l_start;
 				const auto fraction_complete = double(end + 2) / (db_filesize / 8);
 				const auto t_remaining = (t_elapsed / fraction_complete) * (1.0 - fraction_complete);
-				cerr << t_last_progress_update << ":  Loaded almost " << ((end + 2) / (2000 * 1000)) << " million input DB kmers (" << int(fraction_complete * 1000) / 10.0 << " percent).  Expect to complete loading in " << int(t_remaining / (60 * 100)) / 10.0 << " more minutes." << endl;
+				cerr << t_last_progress_update << ":  Loaded almost " << ((end + 2) / (2000 * 1000)) << " million input DB kmers (" << int(fraction_complete * 1000) / 10.0 << " percent).  Expect to complete processing in " << int(t_remaining / (60 * 100)) / 10.0 << " more minutes." << endl;
 			}
 			const auto snp_with_offset = db_data[end];
 			const auto rc = snp_with_offset & 0x80;  // 0 -> forward, 0x80 -> reverse complement
@@ -657,7 +654,6 @@ int main(int argc, char** argv) {
 			const auto snp = snp_with_offset >> 8;
 			const auto offset = snp_with_offset & 0x7f;
 			const auto kmer = db_data[end + 1];
-			const auto lmer = kmer >> M2;
 			const auto map_entry = snps_map.find(snp);
 			uint32_t snp_id;
 			if (map_entry == snps_map.end()) {
@@ -789,23 +785,6 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			// We've added information to the snp_repr.  Extend the coverage masks.
 			snp_mask_0 |= kmer_mask_0;
 			snp_mask_1 |= kmer_mask_1;
-			if ((kmer_index.size() > 0) && (lmer != last_lmer)) {
-				start = kmer_index.size() - 1;
-				++lmer_count;
-			}
-			// Invariant:  The data loaded so far for lmer reside at kmer_index[start...]
-			assert(start <= MAX_START);
-			const auto len = kmer_index.size() - start + 1;
-			assert(len < MAX_LEN);
-			assert(lmer <= LMER_MASK);
-			if (recompute_lmer_index) {
-				lmer_index[lmer] = (start << LEN_BITS) | len;
-			}
-			last_lmer = lmer;
-			if (recompute_mmer_bloom) {
-				const uint64_t bloom_index = kmer & MAX_BLOOM;
-				mmer_bloom[bloom_index / 64] |= ((uint64_t) 1) << (bloom_index % 64);
-			}
 		}
 		if (snps_map.size() >= MAX_SNPS) {
 			cerr << chrono_time() << ":  WARNING:  Dropped " << (snps_map.size() - MAX_SNPS) << " SNPs (" << int((snps_map.size() - MAX_SNPS) * 1000.0 / snps_map.size())/10.0 << " percent) from original DB because only " << MAX_SNPS << " SNPs can be stored in the optimized DB at this time." << endl;
@@ -834,7 +813,7 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			const auto offset = kmi & 0x1f;
 			const auto snp_id = kmi >> 5;
 			assert(snp_id == db_snp_id);
-			assert(0 <= offset && offset < 31 && offset < K);
+			assert(0 <= offset && offset <= 31 && offset < K);
 			assert(0 <= snp_id && snp_id <= (snps.size() / 3));
 			const auto* snp_repr = &(snps[3 * snp_id]);
 			const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
@@ -848,7 +827,56 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 		}
 	}
 
-	if (recompute_everything) {
+	if (recompute_lmer_index || recompute_mmer_bloom) {
+		cerr << chrono_time() << ":  Recomputing bloom index and/or filter." << endl;
+		uint64_t start = 0;
+		uint64_t last_lmer;
+		const auto kmer_index = db_kmer_index.address();
+		const auto kmer_count = db_kmer_index.elementCount();
+		const auto snps = db_snps.address();
+		const auto snps_count = db_snps.elementCount() / 3;
+		auto mmer_bloom = db_mmer_bloom.address();
+		t_last_progress_update = chrono_time();
+		for (uint64_t end = 0;  end < kmer_count;  ++end) {
+			if (((end + 1) % (10 * 1000 * 1000)) == 0 && (chrono_time() - t_last_progress_update >= 10*1000)) {
+				// print progress update every 10 million kmers / but not more often than every 10 seconds
+				t_last_progress_update = chrono_time();
+				const auto t_elapsed = t_last_progress_update - l_start;
+				const auto fraction_complete = double(end + 1) / kmer_count;
+				const auto t_remaining = (t_elapsed / fraction_complete) * (1.0 - fraction_complete);
+				cerr << t_last_progress_update << ":  Processed almost " << ((end + 1) / (1000 * 1000)) << " million kmers (" << int(fraction_complete * 1000) / 10.0 << " percent).  Expect to complete processing in " << int(t_remaining / (60 * 100)) / 10.0 << " more minutes." << endl;
+			}
+			const auto kmi = kmer_index[end];
+			const auto offset = kmi & 0x1f;
+			const auto snp_id = kmi >> 5;
+			assert(0 <= offset && offset <= 31 && offset < K);
+			assert(0 <= snp_id && snp_id <= snps_count);
+			const auto* snp_repr = &(snps[3 * snp_id]);
+			const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
+			const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
+			assert(((snp_repr[0] >> 62) == (snp_repr[1] & 0x3)) && "SNP position differs in two supposedly redundant representations.");
+			const auto kmer = high_bits | low_bits;
+			const auto lmer = kmer >> M2;
+			if (recompute_lmer_index) {
+				if ((end > 0) && (lmer != last_lmer)) {
+					start = end;
+				}
+				// Invariant:  The data loaded so far for lmer reside at kmer_index[start...]
+				assert(start <= MAX_START);
+				const auto len = end - start + 1;
+				assert(len < MAX_LEN);
+				assert(lmer <= LMER_MASK);
+				lmer_index[lmer] = (start << LEN_BITS) | len;
+				last_lmer = lmer;
+			}
+			if (recompute_mmer_bloom) {
+				const uint64_t bloom_index = kmer & MAX_BLOOM;
+				mmer_bloom[bloom_index / 64] |= ((uint64_t) 1) << (bloom_index % 64);
+			}
+		}
+	}
+
+	if (recompute_kmer_index) {
 		db_snps.save();
 		db_kmer_index.save();
 	}
@@ -861,19 +889,15 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 		db_lmer_index.save();
 	}
 
-	cerr << chrono_time() << ":  Done with init for DB with " << (db_filesize / 16) << " kmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
-
-	if (recompute_everything) {
-		// only accurate when recomputing
-		cerr << chrono_time() << ":  Optimized DB contains " << kmer_index.size() << " kmers.  " << endl;
-	}
+	// only accurate when recomputing
+	cerr << chrono_time() << ":  Done with init for optimized DB with " << db_kmer_index.elementCount() << " kmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	l_start = chrono_time();
 
 	vector<thread> th_array;
 	int tmp_counter = 0;
 	for(; optind < argc; optind++) {
-		th_array.push_back(thread(kmer_lookup, lmer_index, mmer_bloom, db_kmer_index.address(), db_snps.address(), optind - in_pos, argv[optind], oname, M2, M3));
+		th_array.push_back(thread(kmer_lookup, lmer_index, db_mmer_bloom.address(), db_kmer_index.address(), db_snps.address(), optind - in_pos, argv[optind], oname, M2, M3));
 		++tmp_counter;
 
 		if (tmp_counter >= n_threads) {
