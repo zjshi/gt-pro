@@ -101,19 +101,9 @@ int_type seq_encode(const char* buf, const uint8_t* code_dict) {
 	// This loop may be unrolled by the compiler because len is a compile-time constant.
 	for (int bitpos = (len - 1) * BITS_PER_BASE;  bitpos >= 0;  bitpos -= BITS_PER_BASE) {
 		const int_type b_code = code_dict[*buf++];
-		seq_code |= (b_code << bitpos);
+		seq_code |= (b_code << ((len - 1) * BITS_PER_BASE - bitpos));
 	}
 	return seq_code;
-}
-
-template <class int_type>
-void seq_decode(char* buf, const int len, const int_type seq_code) {
-	constexpr uint8_t B_MASK = (1 << BITS_PER_BASE) - 1;
-	for (int i=0;  i < len - 1;  ++i) {
-		const uint8_t b_code = B_MASK & (seq_code >> (BITS_PER_BASE * (len - i - 2)));
-		buf[i] = bit_decode(b_code);
-	}
-	buf[len - 1] = '\0';
 }
 
 long chrono_time() {
@@ -221,7 +211,7 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
-					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j + K - XX, code_dict) & MAX_PRESENT;
+					const auto mmer_pres = seq_encode<uint64_t, XX>(seq_buf + j, code_dict) & MAX_PRESENT;
 					const auto mpres = mmer_present[mmer_pres / 64] >> (mmer_pres % 64);
 
 					if (mpres & 1) {
@@ -234,7 +224,7 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 						for (uint64_t z = start;  z < end;  z += 2) {
 							const auto db_kmer = data[z + 1];
 							if (kmer == db_kmer) {
-								const auto db_snp = data[z];
+								const auto db_snp = data[z] >> 8;
 								if (footprint.find(db_snp) == footprint.end()) {
 									kmer_matches.push_back(db_snp);
 									footprint.insert({db_snp, 1});
@@ -513,7 +503,6 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// comment
 	cerr << chrono_time() << ":  " << "Done with init for DB with " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	if (!(dbin)) {
