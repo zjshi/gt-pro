@@ -513,6 +513,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	// comment
 	cerr << chrono_time() << ":  " << "Done with init for DB with " << (filesize / 16) << " mmers.  That took " << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
 	if (!(dbin)) {
