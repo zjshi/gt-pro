@@ -213,44 +213,34 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 				// yes, process token
 				for (int j = 0;  j <= token_length - K;  ++j) {
 
+					// This kmer_tuple encodes the forward and reverse kmers at seq_buf[j...]
+					uint64_t kmer_tuple[2];
+					seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
 
-					// TODO:  Deduplicate forward and RC.
-					uint64_t mmer_pres[2];
-					seq_encode<uint64_t, XX>(mmer_pres, seq_buf + j);
-					auto mpres = (
-						(((mmer_bloom[(mmer_pres[1] & MAX_BLOOM) / 64] >> (mmer_pres[0] % 64)) & 1) << 1) |
-						 ((mmer_bloom[(mmer_pres[0] & MAX_BLOOM) / 64] >> (mmer_pres[1] % 64)) & 1)
-					);
-					if (mpres) {
-						uint64_t kmer_tuple[2];
-						seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
-						for (const auto& kmer: kmer_tuple) {
-							if (mpres & 1) {
-								const uint32_t lmer = kmer >> M2;
-								const auto range = lmer_index[lmer];
-								const auto start = range >> LEN_BITS;
-								const auto end = min(MAX_END, start + (range & MAX_LEN));
-
-								for (uint64_t z = start;  z < end;  ++z) {
-									const auto kmi = kmers_index[z];
-									const auto offset = kmi & 0x1f;
-									const auto snp_id = kmi >> 5;
-									const auto* snp_repr = snps + 3 * snp_id;
-									const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
-									const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
-									const auto db_kmer = high_bits | low_bits;
-									assert(lmer == (db_kmer >> M2));
-									if (kmer == db_kmer) {
-										if (footprint.find(snp_id) == footprint.end()) {
-											kmer_matches.push_back(snp_id);
-											footprint.insert({snp_id, 1});
-										}
-									} else if (kmer < db_kmer) {
-										break;
+					for (const auto& kmer: kmer_tuple) {
+						if ((mmer_bloom[(kmer & MAX_BLOOM) / 64] >> (kmer % 64)) & 1) {
+							const uint32_t lmer = kmer >> M2;
+							const auto range = lmer_index[lmer];
+							const auto start = range >> LEN_BITS;
+							const auto end = min(MAX_END, start + (range & MAX_LEN));
+							for (uint64_t z = start;  z < end;  ++z) {
+								const auto kmi = kmers_index[z];
+								const auto offset = kmi & 0x1f;
+								const auto snp_id = kmi >> 5;
+								const auto* snp_repr = snps + 3 * snp_id;
+								const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
+								const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
+								const auto db_kmer = high_bits | low_bits;
+								assert(lmer == (db_kmer >> M2));
+								if (kmer == db_kmer) {
+									if (footprint.find(snp_id) == footprint.end()) {
+										kmer_matches.push_back(snp_id);
+										footprint.insert({snp_id, 1});
 									}
+								} else if (kmer < db_kmer) {
+									break;
 								}
 							}
-							mpres >>= 1;
 						}
 					}
 				}
