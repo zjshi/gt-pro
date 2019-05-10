@@ -136,12 +136,12 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 
 	auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
 
-	//Matching: lmer table lookup then linear search 
+	//Matching: lmer table lookup then linear search
 	vector<char> buffer(buffer_size);
 	char* window = buffer.data();
 
 	uint64_t n_lines = 0;
-	
+
 	// Print progress update every 5 million lines.
 	constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 5*1000*1000;
 
@@ -231,10 +231,10 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 						const auto start = range >> END_MINUS_START_BITS;
 						const auto end = start + (range & MAX_END_MINUS_START);
 
-						for (uint64_t z = start;  z < end;  z += 2) {							
-							const auto db_kmer = data[z];
+						for (uint64_t z = start;  z < end;  z += 2) {
+							const auto db_kmer = data[z + 1];
 							if (kmer == db_kmer) {
-								const auto db_snp = data[z + 1];
+								const auto db_snp = data[z];
 								if (footprint.find(db_snp) == footprint.end()) {
 									kmer_matches.push_back(db_snp);
 									footprint.insert({db_snp, 1});
@@ -266,7 +266,7 @@ bool kmer_lookup_work(LmerRange* lmer_indx, uint64_t* mmer_present, uint64_t* da
 	ofstream fh(out_path, ofstream::out | ofstream::binary);
 
 	if (kmer_matches.size() == 0) {
-		cerr << chrono_time() << ":  " << "zero hits" << endl;	
+		cerr << chrono_time() << ":  " << "zero hits" << endl;
 	} else {
 		sort(kmer_matches.begin(), kmer_matches.end());
 
@@ -333,7 +333,7 @@ void display_usage(char* fname){
 }
 
 int main(int argc, char** argv) {
-	extern char *optarg; 
+	extern char *optarg;
 	extern int optind;
 
 	bool dbflag = false;
@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
 	// Number of bits in the prefix part of the K-mer (also called L-mer,
 	// even though it might not correspond to an exact number of bases).
 	// This has a substantial effect on memory use.  Rule of thumb for
-	// perf is L2 >= K2 - M3.	
+	// perf is L2 >= K2 - M3.
 	auto L2 = 29;
 
 	// Number of bits in the MMER_PRESENT index.  This has a substantial effect
@@ -382,7 +382,7 @@ int main(int argc, char** argv) {
 			case 'h': case '?':
 				display_usage(fname);
 				exit(1);
-		}	
+		}
 	}
 
 	const auto M2 = K2 - L2;
@@ -432,8 +432,8 @@ int main(int argc, char** argv) {
 	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
 	dbbase = regex_replace(dbbase, regex("\\."), "_");
 
-	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_" + to_string(M3) + ".bin";
-	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_" + to_string(L2) + ".bin";
+	const auto OPTIMIZED_DB_MMER_PRESENT = dbbase + "_optimized_db_mmer_present_vX_" + to_string(M3) + ".bin";
+	const auto OPTIMIZED_DB_LMER_INDX = dbbase + "_optimized_db_lmer_indx_vX_" + to_string(L2) + ".bin";
 
 	FILE* dbin = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "rb");
 	if (dbin) {
@@ -492,7 +492,7 @@ int main(int argc, char** argv) {
 	if (!(lmerdbin) || !(dbin)) {
 		lmer_count = filesize ? 1 : 0;
 		for (uint64_t end = 0;  end < filesize / 8;  end += 2) {
-			const auto kmer = data[end];
+			const auto kmer = data[end + 1];
 			const auto lmer = kmer >> M2;
 			if (!(dbin)) {
 				uint64_t mpres = kmer & MAX_PRESENT;
@@ -519,17 +519,17 @@ int main(int argc, char** argv) {
 		l_start = chrono_time();
 		FILE* dbout = fopen(OPTIMIZED_DB_MMER_PRESENT.c_str(), "wb");
 		assert(dbout);
-		const auto success = fwrite(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbout);	
+		const auto success = fwrite(mmer_present, 8, (1 + MAX_PRESENT) / 64, dbout);
 		fclose(dbout);
 		assert(success == (1 + MAX_PRESENT) / 64);
 		cerr << chrono_time() << ":  Done writing optimized MMER_PRESENT.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
 	}
 
 	if (!(lmerdbin)) {
-		l_start = chrono_time();		
+		l_start = chrono_time();
 		FILE* dbout = fopen(OPTIMIZED_DB_LMER_INDX.c_str(), "wb");
 		assert(dbout);
-		const auto success = fwrite(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), dbout);	
+		const auto success = fwrite(lmer_indx, sizeof(LmerRange), (1 + LMER_MASK), dbout);
 		fclose(dbout);
 		assert(success == (1 + LMER_MASK));
 		cerr << chrono_time() << ":  Done writing optimized LMER_INDX with " << lmer_count << " lmers.  That took " << (chrono_time() - l_start) / 1000 << " more seconds." << endl;
@@ -551,12 +551,12 @@ int main(int argc, char** argv) {
 				ith.join();
 				// cerr << chrono_time() << ":  " << " Thread joined " << endl;
 			}
-			
+
 			cerr << chrono_time() << ":  " << "Ready to dispatch next round of threads." << endl;
 
 			th_array.clear();
 			tmp_counter = 0;
-		} 
+		}
 	}
 
 	if (th_array.size() > 0){
@@ -572,7 +572,7 @@ int main(int argc, char** argv) {
 	close(fd);
 
 	if (preload) {
-		delete data;		
+		delete data;
 	}
 
 	delete mmer_present;
