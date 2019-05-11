@@ -557,7 +557,7 @@ int main(int argc, char** argv) {
 	auto l_start = chrono_time();
 	cerr << chrono_time() << ":  " << "Starting to load DB: " << db_path << endl;
 
-	size_t db_filesize = get_fsize(db_path);
+	uint64_t db_filesize = get_fsize(db_path);
 
 	string dbbase = string(basename(db_path));
 	dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
@@ -567,8 +567,8 @@ int main(int argc, char** argv) {
 		cerr << chrono_time() << ":  DB indexes will be preloaded." << endl;
 	}
 
-	// The input (un-optimized) DB is a sequence of 56-bit snp followed by 8-bit offset
-	// of SNP within kmer followed by 64-bit kmer.  The 56-bit snp encodes the species id,
+	// The input (un-optimized) DB is a sequence of 56-bit snp followed by 1-bit forward/rc indicator,
+	// then 7 bit offset of SNP within kmer, then 64-bit kmer.  The 56-bit snp encodes the species id,
 	// major/minor allele, and genomic position.  From that we build the "optimized" DBs
 	// below.  The first one, db_snps, lists the unique SNPs in arbitrary order; and
 	// for each SNP in addition to the 56-bits mentioned above it also shows the
@@ -592,7 +592,7 @@ int main(int argc, char** argv) {
 	);
 	const bool recompute_mmer_bloom = db_mmer_bloom.mmap_or_load(preload);
 
-	// For every kmer in the original DB, the first L2 bits of the kmer's nucleotide sequence
+	// For every kmer in the original DB, the most-signifficant L2 bits of the kmer's nucleotide sequence
 	// are called that kmer's lmer.  Kmers that share the same lmer occupy a range of consecutive
 	// positions in the kmer_index, and that range is lmer_index[lmer].
 	DBIndex<LmerRange> db_lmer_index(
@@ -750,7 +750,7 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			// from that the original DB, and compare to the original.  That is the final
 			// and most definitive correctness check.
 			//
-			static_assert(sizeof(kmer) * 8 == 64);
+			static_assert(sizeof(kmer) * 8 == 64, "Use uint64_t for kmers, please.");
 			const auto low_bits = kmer << (62 - (offset * BITS_PER_BASE));
 			const auto high_bits = kmer >> (offset * BITS_PER_BASE);
 			assert(((low_bits >> 62) == (high_bits & 0x3)) && "SNP position differs in two supposedly redundant representations.");

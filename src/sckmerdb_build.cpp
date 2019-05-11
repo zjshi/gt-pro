@@ -106,7 +106,6 @@ uint64_t seq_encode(const char* buf) {
 
 
 
-// FIXME :  Wrong number of lines in sckmer profile tsv
 void bit_load(const char* k_path, vector<KmerData>& result) {
 
     assert(k_path);
