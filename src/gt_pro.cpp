@@ -531,10 +531,6 @@ int main(int argc, char** argv) {
 	assert(M3 > 0);
 	assert(M3 < 64);
 
-	// FIXME this is just for now
-	assert(L2 == 30 &&  "Sorry, for now only -l 30 is supported." );
-	assert(M2 == 32);
-
 	const auto LMER_MASK = (LSB << L2) - LSB;
 	const auto MMER_MASK = (LSB << M2) - LSB;
 	const auto MAX_BLOOM = (LSB << M3) - LSB;
@@ -581,7 +577,7 @@ int main(int argc, char** argv) {
 	// not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
 	// an index into the db_snps table above, and 5 bits representing the SNP position within
 	// the kmer.  This needs to be explained a little better;  see email (eventually docs).
-	DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index_" + to_string(M2) + ".bin");
+	DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index.bin");
 	const bool recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
 
 	// Bit vector with one presence/absence bit for every possible M3-bit kmer suffix (the M3
