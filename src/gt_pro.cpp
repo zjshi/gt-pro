@@ -295,38 +295,48 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 
 void kmer_lookup(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, uint64_t* snps, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
-	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 32, 34, 35, 36, 37}.
+	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 31, 32, 33, 34, 35, 36, 37}.
 	bool match = (
 			    kmer_lookup_work<32, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<32, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<32, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<32, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<32, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<32, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<32, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<32, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
 	         || kmer_lookup_work<33, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<33, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<33, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<33, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<33, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<33, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<33, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<33, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
 	         || kmer_lookup_work<34, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<34, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<34, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<34, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<34, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<34, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<34, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<34, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
 	         || kmer_lookup_work<35, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<35, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<35, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<35, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<35, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<35, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<35, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<35, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 
 	         || kmer_lookup_work<36, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<36, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<36, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<36, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<36, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<36, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<36, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
