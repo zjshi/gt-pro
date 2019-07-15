@@ -89,13 +89,15 @@ uint64_t seq_encode(const char* buf) {
 //      $6 - reverse complement of $4
 //      $7 - unused
 //      $8 - unused
-//      $9 - 6 decimal digit species ID
-//      $10 - unused
+//      $9 - unused
+//      $10 - 6 decimal digit species ID
+//      $11 - unused
+//      $12 - unused
 //
 //  a "snp coordinate" is obtained by concatenating the following character strings and
 //  converting the result back to an integer:
 //
-//      * the 6 decimal digit species id (input column $8),
+//      * the 6 decimal digit species id (input column $10),
 //
 //      * a single digit allele type:
 //           (0 = major allele, matching input $3 and $5,

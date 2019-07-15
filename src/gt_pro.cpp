@@ -769,11 +769,15 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			const auto mask_0 = snp_mask_0 & kmer_mask_0;
 			const auto mask_1 = snp_mask_1 & kmer_mask_1;
 			if (((mask_0 & snp_repr[0]) != (mask_0 & low_bits))) {
-				cerr << "ERROR:  SNP covered by conflicting kmers." << endl;
+				cerr << "ERROR:  SNP " << snp << " covered by conflicting kmers." << endl;
 				assert(false);
 			}
 			if (((mask_1 & snp_repr[1]) != (mask_1 & high_bits))) {
-				cerr << "ERROR:  SNP covered by conflicting kmers." << endl;
+				cerr << "ERROR:  SNP " << snp << " covered by conflicting kmers." << endl;
+				cerr << "FROM KMERS BEFORE CONFLICT: " << bitset<64>(mask_1 & snp_repr[1]) << endl;
+				cerr << "FROM FIRST CONFLICT KMER:   " << bitset<64>(mask_1 & high_bits) << endl;
+				cerr << "MANDATORY AGREEMENT MASK:   " << bitset<64>(mask_1) << endl;
+				cerr << "CONFLICTING KMER:           " << bitset<64>(kmer) << endl;
 				assert(false);
 			}
 			snp_repr[0] |= low_bits;
@@ -781,6 +785,14 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			// We've added information to the snp_repr.  Extend the coverage masks.
 			snp_mask_0 |= kmer_mask_0;
 			snp_mask_1 |= kmer_mask_1;
+
+			if (snp == 1019591795299UL) {
+				cerr << endl;
+				cerr << "KMER:           " << bitset<64>(kmer) << endl;
+				cerr << "SNP_REPR[0]:    " << bitset<64>(snp_repr[0]) << endl;
+				cerr << "SNP_REPR[1]:    " << bitset<64>(snp_repr[1]) << endl;
+				cerr << endl;
+			}
 		}
 		if (snps_map.size() >= MAX_SNPS) {
 			cerr << chrono_time() << ":  WARNING:  Dropped " << (snps_map.size() - MAX_SNPS) << " SNPs (" << int((snps_map.size() - MAX_SNPS) * 1000.0 / snps_map.size())/10.0 << " percent) from original DB because only " << MAX_SNPS << " SNPs can be stored in the optimized DB at this time." << endl;
