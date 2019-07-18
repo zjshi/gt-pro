@@ -26,7 +26,7 @@ build your build sckmerdb from k-mer profile files
 `sckmerdb_build fpath [fpath ...]`  
 
 genotyping in metagenome samples  
-`gt_pro -d <sckmerdb_path: string> -r <read_len; int; default 90> -t <n_threads; int; default 1> -o <output_prefix; string; default ./> [-h] input1 [input2 ...]`  
+`gt_pro -d <sckmerdb_path: string> -t <n_threads; int; default 1> -o <output_prefix; string; default ./> [-h] input1 [input2 ...]`  
 
 inspect sckmerdb  
 `sckmerdb_inspect fpath`  
@@ -43,23 +43,15 @@ test case:
 
 ## Download sckmerdb
 
-k-mer profile files for all 974 species  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmer_profiles.tar.bz2`  
+k-mer profile files for all 974 species (updates on the way)  
 
-raw k-mer database files for all 974 species  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmer_dbs.tar.bz2`
-
-raw tag SNPs covering k-mer database files for all 974 species  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmer_tag_dbs.tar.bz2`
+raw k-mer database files for all 974 species (updates on the way)  
 
 all-in-one encoded k-mer database file  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmerdb_sp974.bin`
-
-all-in-one encoded tag SNP covering k-mer database file  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/sckmerdb_sp974_tag.bin`
+`wget http://jason.shi-bucket.s3.amazonaws.com/tmp/variants_main.ss.hq.db.bin`
 
 species taxonomy metadata  
 `wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/gut_species_taxonomy.tsv`  
 
 gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/snp_dict.tsv`
+`wget http://jason.shi-bucket.s3.amazonaws.com/tmp/variants_main.covered.hq.snp_dict.tsv`
