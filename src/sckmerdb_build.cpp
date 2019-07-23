@@ -139,7 +139,7 @@ inline uint64_t get_snp(const KmerData& kmer_data) {
 
 
 
-void bit_load(string f_allowed, vector<KmerData>& result) {
+void bit_load(string f_allowed, vector<KmerData>& result, vector<KmerData>& profiles) {
 
     auto t_start = chrono_time();
 
@@ -151,13 +151,13 @@ void bit_load(string f_allowed, vector<KmerData>& result) {
     FILE *fp = fopen(f_profile.c_str(), "r");
     if (fp == NULL) {
         cerr << "Trouble opening file " << f_profile << "." << endl;
-        exit(EXIT_FAILURE);
+        assert(false);
     }
 
     FILE *fa = fopen(f_allowed.c_str(), "r");
-    if (fp == NULL) {
+    if (fa == NULL) {
         cerr << "Trouble opening file " << f_allowed << "." << endl;
-        exit(EXIT_FAILURE);
+        assert(false);
     }
 
     struct Column {
@@ -212,8 +212,7 @@ void bit_load(string f_allowed, vector<KmerData>& result) {
     auto &ac_kmer = allowed_cols[0];
     auto &ac_snp = allowed_cols[1];
 
-    using AllowedKmer = tuple<uint64_t, uint64_t>;
-    vector<AllowedKmer> allowed;
+    uint64_t allowed_count = 0;
     while (true) {
         bool no_column_is_empty = true;
         for (auto& c : allowed_cols) {
@@ -229,9 +228,13 @@ void bit_load(string f_allowed, vector<KmerData>& result) {
         assert(ac_snp.is_snp_id() && "SNP id column needs to be decimal with at 8...16 digits and the character at position 6 must be '0' or '1'.");
         auto kmer = seq_encode<K>(ac_kmer.c_str);
         auto snp = strtoull(ac_snp.c_str, NULL, 10);
-        allowed.push_back(KmerData(kmer, snp));
+        result.push_back(KmerData(kmer, snp));  // the snp will be amended later with more information
+        ++allowed_count;
     }
-    sort(allowed.begin(), allowed.end());
+    fclose(fa);
+    auto end = result.end();
+    auto start = end - allowed_count;
+    sort(start, end);
 
     // columns in the DDDDDD.sckmer_profiles.tsv file.
     Column profile_cols[] = {
@@ -255,7 +258,7 @@ void bit_load(string f_allowed, vector<KmerData>& result) {
     auto& c_snp_offset_in_forward_kmer = profile_cols[1];
     auto& c_genome_id = profile_cols[9];
 
-    vector<KmerData> profiles;
+    profiles.clear();
     while (true) {
         bool no_column_is_empty = true;
         for (auto& c : profile_cols) {
@@ -296,6 +299,7 @@ void bit_load(string f_allowed, vector<KmerData>& result) {
             profiles.push_back(KmerData(kmer, snp_with_rc_and_offset));
         }
     }
+    fclose(fp);
     sort(profiles.begin(), profiles.end());
 
     if (profiles.size() == 0) {
@@ -303,27 +307,29 @@ void bit_load(string f_allowed, vector<KmerData>& result) {
         assert(false && "Empty sckmer_profiles file.");
     }
 
-    if (allowed.size() == 0) {
+    if (allowed_count == 0) {
         cerr << "Empty file " << f_allowed << endl;
         assert(false && "Empty sckmer_allowed file.");
     }
 
-    // left-join sorted A and P
-    auto p = profiles.begin();
-    for (auto& a : allowed) {
-        assert((p != profiles.end()) && "sckmer_profiles not superset of sckmer_allowed");
-        auto akmer = get<0>(a);
-        auto asnp = get<1>(a);
-        auto pkmer = get_kmer(*p);
-        auto psnp = get_snp(*p);
-        assert(((pkmer < akmer) || ((pkmer == akmer) && (psnp <= asnp))) && "sckmer_profiles not superset of sckmer_allowed");
-        if ((akmer == pkmer) && (asnp == psnp)) {
-            result.push_back(*p);
+    // left-join "profiles" into "allowed" results, taking advantage of matching sort order
+    auto p = profiles.begin() - 1;
+    for (auto a = start; a != end; ++a) {
+        const auto akmer = get<0>(*a);
+        const auto asnp = get<1>(*a);
+        uint64_t pkmer, psnp;
+        do {
+            ++p;
+            assert((p != profiles.end()) && "sckmer_profiles not superset of sckmer_allowed");
+            pkmer = get_kmer(*p);
+            psnp = get_snp(*p);
+            assert(((pkmer < akmer) || ((pkmer == akmer) && (psnp <= asnp))) && "sckmer_profiles not superset of sckmer_allowed");
         }
-        ++p;
+        while ((akmer != pkmer) || (asnp != psnp));
+        get<1>(*a) = get<1>(*p);
     }
 
-    cerr << (string("Loaded files ") + f_allowed + " and " + f_profile + " in " + to_string((chrono_time() - t_start) / 1000.0) + " secs.\n");
+    cerr << (string("Loaded ") + to_string(allowed_count) + " kmers from files " + f_allowed + " and " + f_profile + " in " + to_string((chrono_time() - t_start) / 1000.0) + " secs.\n");
 }
 
 uint64_t get_species(const KmerData& kd) {
@@ -367,16 +373,21 @@ void multi_btc64(int n_path, const char** kpaths) {
 
     vector<KmerData> kdb;
     vector<KmerData>* kkdb[MAX_THREADS];
+    vector<KmerData>* scratch[MAX_THREADS];
     kkdb[0] = &kdb;
     for (int i = 1;  i < MAX_THREADS;  ++i) {
         kkdb[i] = new vector<KmerData>();
     }
+    for (int i = 0;  i < MAX_THREADS;  ++i) {
+        scratch[i] = new vector<KmerData>();
+        scratch[i]->resize(3000000);
+    }
 
     // This function runs in each thread.  It loads the bits of an input file,
     // then appends those bits to the kdb vector.
-    auto thread_func = [&num_running, &running, &mtx, &kkdb](const char* input_file_path, int thread_id) {
+    auto thread_func = [&num_running, &running, &mtx, &kkdb, &scratch](const char* input_file_path, int thread_id) {
         assert(0 <= thread_id && thread_id < MAX_THREADS);
-        bit_load(input_file_path, *(kkdb[thread_id]));
+        bit_load(input_file_path, *(kkdb[thread_id]), *(scratch[thread_id]));
         mtx.lock(); {
             --num_running;
             running[thread_id] = false;
@@ -427,6 +438,10 @@ void multi_btc64(int n_path, const char** kpaths) {
     auto time_merge = chrono_time();
     cerr << "Merging input data from " << MAX_THREADS << " threads." << endl;
 
+    for (int i = 0; i < MAX_THREADS; ++i) {
+        delete scratch[i];
+    }
+
     // note *kkdb[0] is an alias for kdb
     for (int i = 1; i < MAX_THREADS; ++i) {
         kdb.insert(kdb.end(), kkdb[i]->begin(), kkdb[i]->end());
@@ -448,6 +463,7 @@ void multi_btc64(int n_path, const char** kpaths) {
         using iterator = vector<KmerData>::iterator;
         auto sorter = [](iterator start, iterator end) {
             sort(start, end);
+
         };
         auto merger = [](iterator start, iterator middle, iterator end) {
             // LOL, turns out this "inplace_merge" isn't actually in-place, so it allocs tons of RAM!
@@ -518,6 +534,11 @@ void multi_btc64(int n_path, const char** kpaths) {
     cerr << "Purging conflicts removed " <<  multispecies_kmers << " multispecies kmers (" << multispecies_unique_kmers << " unique)." << endl;
 
     fh.close();
+
+    if (multispecies_kmers) {
+        cerr << "ERROR:  Multispecies kmers found!   There is possibly a problem with the upstream sckmerdb_allowed.tsv generator.\n";
+        assert(false && "multispecies kmers present in input");
+    }
 }
 
 void display_usage(const char *fname){
