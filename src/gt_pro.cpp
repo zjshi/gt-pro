@@ -306,9 +306,27 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 
 void kmer_lookup(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kmers_index, uint64_t* snps, int channel, char* in_path, char* o_name, int M2, const int M3) {
 	// Only one of these will really run.  By making them known at compile time, we increase speed.
-	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30}  x  M in {30, 31, 32, 33, 34, 35, 36, 37}.
+	// The command line params corresponding to these options are L in {26, 27, 28, 29, 30, 31, 32}  x  M in {30, 31, 32, 33, 34, 35, 36, 37}.
 	bool match = (
-			    kmer_lookup_work<32, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+				kmer_lookup_work<30, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<30, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+
+			 || kmer_lookup_work<31, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 34>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 35>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 36>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+			 || kmer_lookup_work<31, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
+
+			 || kmer_lookup_work<32, 30>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 			 || kmer_lookup_work<32, 31>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 	         || kmer_lookup_work<32, 32>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
 			 || kmer_lookup_work<32, 33>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3)
@@ -637,7 +655,7 @@ int main(int argc, char** argv) {
 		db_data = (uint64_t *) mmap(NULL, db_filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 		assert(db_data != MAP_FAILED);
 		unordered_map<uint64_t, uint32_t> snps_map;
-		set<uint64_t> conflicting_snps;
+		set<uint64_t> virtual_snps;
 		vector<tuple<uint64_t, uint64_t>> snps_known_bits;  // not persisted, just for integrity checking during construction
 		auto& kmer_index = *db_kmer_index.getElementsVector();
 		auto& snps = *db_snps.getElementsVector();
@@ -671,7 +689,7 @@ int main(int argc, char** argv) {
 					snp_id = snps_map.size();
 					snps_map.insert({snp, snp_id});
 					if (snp_id == MAX_SNPS) {
-						 cerr << chrono_time() << ":  Too many SNPs in database.  Only up to " << MAX_SNPS << " are supported, and it's best to leave 10% margin for conflict resolution 'virtual' SNPs."<< endl;
+						 cerr << chrono_time() << ":  Too many SNPs in database.  Only up to " << MAX_SNPS << " are supported, and it's best to leave 10% margin for 'virtual' SNPs."<< endl;
 					}
 					if (snp_id >= MAX_SNPS) {
 						break;  // break out of vid loop
@@ -777,7 +795,7 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 				const auto mask_0 = snp_mask_0 & kmer_mask_0;
 				const auto mask_1 = snp_mask_1 & kmer_mask_1;
 				if (((mask_0 & snp_repr[0]) != (mask_0 & low_bits)) || ((mask_1 & snp_repr[1]) != (mask_1 & high_bits))) {
-					conflicting_snps.insert(snp).second;
+					virtual_snps.insert(snp);
 					if (vid == SNP_MAX_VID) {
 						// This really shouldn't happen.
 						cerr << "ERROR:  SNP " << snp << " covered by " << (SNP_MAX_VID + 1) << " conflicting kmers." << endl;
@@ -801,8 +819,8 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			// We cannot ensure DB integrity with SNP overflow.  It's too complicated with virtual SNPs.
 			assert(false && "too many SNPs");
 		}
-		cerr << chrono_time() << ":  Optimized DB contains " << (snps.size() / 3) << " snps." << endl;
-		cerr << chrono_time() << ":  There were " << conflicting_snps.size() << " conflicting snps." << endl;
+		cerr << chrono_time() << ":  Compressed DB contains " << (snps.size() / 3) << " snps." << endl;
+		cerr << chrono_time() << ":  There were " << virtual_snps.size() << " virtual snps." << endl;
 		cerr << chrono_time() << ":  Validating optimized DB against original DB." << endl;
 		assert((snps.size() / 3) == snps_map.size());
 		for (uint64_t end = 0, last_kmi = 0;  (end < min(MAX_INPUT_DB_KMERS, db_filesize / 8)) && (last_kmi < MAX_KMERS);  end += 2) {
