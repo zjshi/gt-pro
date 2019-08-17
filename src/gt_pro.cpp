@@ -300,19 +300,17 @@ bool kmer_lookup_work(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kme
     cerr << chrono_time() << ":  "
          << "zero hits" << endl;
   } else {
+    // For each kmer output how many times it occurs in kmer_matches.
     sort(kmer_matches.begin(), kmer_matches.end());
-    // FIXME.  The loop below doesn't output the last SNP.
-    // Also the counts may be off by 1.
-    uint64_t cur_count = 0;
-    uint64_t cur_snp = kmer_matches[0];
-    for (auto it : kmer_matches) {
-      if (it != cur_snp) {
-        fh << cur_snp << '\t' << cur_count << '\n';
-        cur_snp = it;
-        cur_count = 1;
-      } else {
-        ++cur_count;
-      }
+    const uint64_t end = kmer_matches.size();
+    uint64_t i = 0;
+    while  (i != end) {
+        uint64_t j = i + 1;
+        while (j != end && kmer_matches[i] == kmer_matches[j]) {
+            ++j;
+        }
+        fh << kmer_matches[i] << '\t' << (j - i) << '\n';
+        i = j;
     }
   }
   cerr << chrono_time() << ":  "
