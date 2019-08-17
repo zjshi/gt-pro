@@ -50,7 +50,7 @@ constexpr auto BITS_PER_BASE = 2;
 constexpr auto K2 = BITS_PER_BASE * K;
 
 constexpr uint64_t LSB = 1;
-constexpr uint64_t BIT_MASK = (LSB << (K * BITS_PER_BASE)) - LSB;
+constexpr auto FULL_KMER = (LSB << K2) - LSB;
 
 // Choose appropriately sized integer types to represent offsets into
 // the database.
@@ -115,6 +115,19 @@ void seq_encode(int_type* result, const char* buf) {
 		result[1] <<= BITS_PER_BASE;
 		result[1] |= (b_code ^ 3);
 	}
+}
+
+uint64_t reverse_complement(uint64_t dna) {
+	// The bitwise complement represents the ACTG nucleotide complement -- see seq_encode above.
+	// Possibly not the fastest way to RC a kmer, but only runs during database construction.
+	dna ^= FULL_KMER;
+	uint64_t rc = dna & 0x3;
+	for (int k = 1; k < 31; ++k) {
+	    dna >>= 2;
+		rc <<= 2;
+		rc |= dna & 0x3;
+	}
+	return rc;
 }
 
 long chrono_time() {
@@ -222,34 +235,32 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 					// This kmer_tuple encodes the forward and reverse kmers at seq_buf[j...]
 					uint64_t kmer_tuple[2];
 					seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
+					const uint64_t kmer = min(kmer_tuple[0], kmer_tuple[1]);
 
-					for (const auto& kmer: kmer_tuple) {
-						if ((mmer_bloom[(kmer & MAX_BLOOM) / 64] >> (kmer % 64)) & 1) {
-							const uint32_t lmer = kmer >> M2;
-							const auto range = lmer_index[lmer];
-							const auto start = range >> LEN_BITS;
-							const auto end = min(MAX_END, start + (range & MAX_LEN));
-							for (uint64_t z = start;  z < end;  ++z) {
-								const auto kmi = kmers_index[z];
-								const auto offset = kmi & 0x1f;
-								const auto snp_id = kmi >> 5;
-								const auto* snp_repr = snps + 3 * snp_id;
-								const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
-								const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
-								const auto db_kmer = high_bits | low_bits;
-								assert(lmer == (db_kmer >> M2));
-								if (kmer == db_kmer) {
-									// The set of kmers that covers this SNP within a given read cannot conflict.
-									// They will all map to the same virtual SNP.  Therefore, we can use the snp_id
-									// (which is really a virtual snp id) as a proxy for the real snp id.  Even
-									// though in general the mapping of virtual to real snp id is many to one,
-									// within each read it is always 1:1.
-									if (footprint.find(snp_id) == footprint.end()) {
-										kmer_matches.push_back(snp_id);
-										footprint.insert({snp_id, 1});
-									}
-								} else if (kmer < db_kmer) {
-									break;
+					if ((mmer_bloom[(kmer & MAX_BLOOM) / 64] >> (kmer % 64)) & 1) {
+						const uint32_t lmer = kmer >> M2;
+						const auto range = lmer_index[lmer];
+						const auto start = range >> LEN_BITS;
+						const auto end = min(MAX_END, start + (range & MAX_LEN));
+						for (uint64_t z = start;  z < end;  ++z) {
+							const auto kmi = kmers_index[z];
+							const auto offset = kmi & 0x1f;
+							const auto snp_id = kmi >> 5;
+							const auto* snp_repr = snps + 3 * snp_id;
+							const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
+							const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & FULL_KMER;
+							const auto db_kmer = high_bits | low_bits;
+							// true but slow due to rc:
+							assert(lmer == (db_kmer >> M2) || lmer == (reverse_complement(db_kmer) >> M2));
+							if (kmer_tuple[0] == db_kmer || kmer_tuple[1] == db_kmer) {
+								// The set of kmers that cover the SNP within the given read won't conflict
+								// with each other, but may still belong to different virtual SNPs.  We need
+								// to identify the real SNP they all belong to, and increment the real SNP's
+								// counter just once for the read.
+								const auto snp = snp_repr[2] & SNP_MAX_REAL_ID;
+								if (footprint.find(snp) == footprint.end()) {
+									kmer_matches.push_back(snp);
+									footprint.insert({snp, 1});
 								}
 							}
 						}
@@ -278,9 +289,6 @@ bool kmer_lookup_work(LmerRange* lmer_index, uint64_t* mmer_bloom, uint32_t* kme
 	if (kmer_matches.size() == 0) {
 		cerr << chrono_time() << ":  " << "zero hits" << endl;
 	} else {
-		for (int i=0;  i<kmer_matches.size();  ++i) {
-			kmer_matches[i] = snps[3 * kmer_matches[i] + 2] & SNP_MAX_REAL_ID; // drop the vid bits (virtual snp id)
-		}
 		sort(kmer_matches.begin(), kmer_matches.end());
 		// FIXME.  The loop below doesn't output the last SNP.
 		// Also the counts may be off by 1.
@@ -607,14 +615,13 @@ int main(int argc, char** argv) {
 	// below.  The first one, db_snps, lists the unique SNPs in arbitrary order; and
 	// for each SNP in addition to the 56-bits mentioned above it also shows the
 	// sequence of 61bp centered on the SNP inferred from all kmers in the original DB.
-    // This needs to be explained a little better;  see email (eventually docs).
 	DBIndex<uint64_t> db_snps(dbbase + "_optimized_db_snps.bin");
 	const bool recompute_snps = db_snps.mmap_or_load(preload);
 
-	// This encodes a list of all kmers, sorted in increasing order.  Each kmer is represented
+	// This encodes the list of all kmers, sorted in increasing order.  Each kmer is represented
 	// not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
 	// an index into the db_snps table above, and 5 bits representing the SNP position within
-	// the kmer.  This needs to be explained a little better;  see email (eventually docs).
+	// the kmer;  possibly using the kmer's reverse complement instead of the kmer.
 	DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index.bin");
 	const bool recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
 
@@ -670,14 +677,17 @@ int main(int argc, char** argv) {
 			}
 			const auto snp_with_offset = db_data[end];
 			const auto rc = snp_with_offset & 0x80;  // 0 -> forward, 0x80 -> reverse complement
-			if (rc) {
-				// Keep only "forward" kmers here, then do every query twice.
-				// This reduces RAM footprint by half.
+			const auto orig_snp = snp_with_offset >> 8;
+			auto offset = snp_with_offset & 0x7f;
+			const auto db_kmer = db_data[end + 1];
+			const auto db_kmer_rc = reverse_complement(db_kmer);
+			if (db_kmer > db_kmer_rc) {
+				// We have already seen and encoded db_kmer_rc.
 				continue;
 			}
-			const auto orig_snp = snp_with_offset >> 8;
-			const auto offset = snp_with_offset & 0x7f;
-			const auto kmer = db_data[end + 1];
+			// Encode the kmer that is flagged as "forward" in the input DB, to represent the pair.
+			const auto kmer = rc ? db_kmer_rc : db_kmer;
+			offset = rc ? 30 - offset : offset;
 			assert(orig_snp <= SNP_MAX_REAL_ID);  // this should leave 8 bits at the top for virtual SNP id
 			// 96-97% of the time, vid=0 works
 			// the rest of the time, we create virtual SNP ids to represent all conflicting kmers
@@ -711,7 +721,7 @@ int main(int argc, char** argv) {
 				//     kmer nucleotide 0 --> kmer binary bits 0, 1                                  |
 				//     kmer nucleotide 1 --> kmer binary bits 2, 3                                  |  "low bits"
 				//     ...                                                                          |
-				//     kmer nucleotide offset --> kmer binary bits 2 * offset, 2 * offset + 1       X  SNP position
+				//     kmer nucleotide offset --> kmer binary bits 2 * offset, 2 * offset + 1      >*<  SNP position
 				//     ...                                                                          |
 				//     kmer nucleotide 29 --> kmer binary bits 59, 60                               |  "high bits"
 				//     kmer nucleotide 30 --> kmer binary bits 61, 62                               |
@@ -788,7 +798,6 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 				assert(((low_bits >> 62) == (high_bits & 0x3)) && "SNP position differs in two supposedly redundant representations.");
 				auto& snp_mask_0 = get<0>(snp_known_bits_mask);
 				auto& snp_mask_1 = get<1>(snp_known_bits_mask);
-				constexpr auto FULL_KMER = (LSB << K2) - LSB;
 				// We've added information to the snp_repr.  Extend the coverage masks.
 				const auto kmer_mask_0 = (FULL_KMER << (62 - (offset * BITS_PER_BASE)));
 				const auto kmer_mask_1 = (FULL_KMER >> (offset * BITS_PER_BASE));
@@ -810,7 +819,7 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 					snp_mask_1 |= kmer_mask_1;
 					const auto kmer_repr = (snp_id << 5) | offset;
 					kmer_index.push_back(kmer_repr);
-					break; // break out of VID loop
+					break; // break out of VID loop as we've successfully encoded the kmer into this virtual SNP id
 				}
 			}
 		}
@@ -828,16 +837,16 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			const auto db_snp = db_snp_with_offset >> 8;
 			const auto db_offset = db_snp_with_offset & 0x1f;
 			const auto rc = db_snp_with_offset & 0x80;  // 0 -> forward, 0x80 -> reverse complement
-			if (rc) {
-				// Keep only "forward" kmers here, then do every query twice.
-				// This reduces RAM footprint by half.
-				continue;
-			}
 			const auto map_entry = snps_map.find(db_snp);
 			assert(map_entry != snps_map.end());
 			const auto db_virtual_snp_id = map_entry->second;
 			assert(db_virtual_snp_id < MAX_SNPS);
 			const auto db_kmer = db_data[end + 1];
+			const auto db_kmer_rc = reverse_complement(db_kmer);
+			if (db_kmer_rc < db_kmer) {
+				// We have already decoded db_kmer_rc.
+				continue;
+			}
 			const auto kmi = kmer_index[last_kmi++];
 			const auto offset = kmi & 0x1f;
 			const auto virtual_snp_id = kmi >> 5;
@@ -845,15 +854,16 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			assert(0 <= virtual_snp_id && virtual_snp_id <= (snps.size() / 3));
 			const auto snp = snps[3 * virtual_snp_id + 2] & SNP_MAX_REAL_ID;
 			assert(snp == db_snp);
-			assert(offset == db_offset);
+			assert(offset == (rc ? 30 - db_offset : db_offset));
 			const auto* snp_repr = &(snps[3 * virtual_snp_id]);
 			const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
-			const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
+			const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & FULL_KMER;
 			assert(((snp_repr[0] >> 62) == (snp_repr[1] & 0x3)) && "SNP position differs in two supposedly redundant representations.");
 			const auto kmer = high_bits | low_bits;
-			if (kmer != db_kmer) {
+			if (kmer != db_kmer && kmer != db_kmer_rc) {
 				cerr << chrono_time() << ":  ERROR:  Mismatch between original and reconstructed kmer at input DB position " << end << endl;
 				cerr << chrono_time() << ":  ERROR:       original " << bitset<64>(db_kmer) << endl;
+				cerr << chrono_time() << ":  ERROR:    original_rc " << bitset<64>(db_kmer_rc) << endl;
 				cerr << chrono_time() << ":  ERROR:  reconstructed " << bitset<64>(kmer) << endl;
 				cerr << chrono_time() << ":  ERROR:  snp " << db_snp << " vid " << ((snps[3 * virtual_snp_id + 2] ^ snp) >> SNP_REAL_ID_BITS) << " offset " << offset << endl;
 				assert(false);
@@ -887,9 +897,14 @@ snp[1]   |00|???  ...          ??|abcd  ... ijk|XY|                 |
 			assert(0 <= snp_id && snp_id <= snps_count);
 			const auto* snp_repr = &(snps[3 * snp_id]);
 			const auto low_bits = snp_repr[0] >> (62 - (offset * BITS_PER_BASE));
-			const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & BIT_MASK;
+			const auto high_bits = (snp_repr[1] << (offset * BITS_PER_BASE)) & FULL_KMER;
 			assert(((snp_repr[0] >> 62) == (snp_repr[1] & 0x3)) && "SNP position differs in two supposedly redundant representations.");
-			const auto kmer = high_bits | low_bits;
+			auto kmer = high_bits | low_bits;
+			const auto kmer_rc = reverse_complement(kmer);
+			if (kmer_rc < kmer) {
+				// remember only the smaller of the kmer pair is in the DB, index, and bloom filter
+				kmer = kmer_rc;
+			}
 			const auto lmer = kmer >> M2;
 			if (recompute_lmer_index) {
 				if ((end > 0) && (lmer != last_lmer)) {
