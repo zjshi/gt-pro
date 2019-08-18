@@ -178,6 +178,8 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 
   char seq_buf[MAX_TOKEN_LENGTH];
 
+  uint64_t dummy;
+
   // This ranges from 0 to the length of the longest read (could exceed MAX_TOKEN_LENGTH).
   int token_length = 0;
 
@@ -246,10 +248,14 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
         // yes, process token
         for (int j = 0; j <= token_length - K; ++j) {
 
+
           // This kmer_tuple encodes the forward and reverse kmers at seq_buf[j...]
           uint64_t kmer_tuple[2];
           seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
           const uint64_t kmer = min(kmer_tuple[0], kmer_tuple[1]);
+
+          dummy += kmer;
+          continue;
 
           if ((mmer_bloom[(kmer & MAX_BLOOM) / 64] >> (kmer % 64)) & 1) {
             const uint32_t lmer = kmer >> M2;
@@ -296,6 +302,13 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     cerr << chrono_time() << ":  "
          << "Error:  Truncated read sequence at end of file: " << in_path << endl;
     exit(EXIT_FAILURE);
+  }
+
+  cerr << chrono_time() << ":  "
+       << "Processed all " << ((n_lines + 3) / 4) << " reads from file " << in_path << endl;
+
+  if (dummy > 1000000000000) {
+    cerr << "cool" << endl;
   }
 
   cerr << chrono_time() << ":  "
