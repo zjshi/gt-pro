@@ -142,16 +142,22 @@ long chrono_time() {
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-template <int M2, int M3>
-bool kmer_lookup_work(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, int channel,
-                      char *in_path, char *o_name, int aM2, int aM3) {
+//template <int M2, int M3>
+bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, int channel,
+                      char *in_path, char *o_name, const int aM2, const int aM3) { // , int aM2, int aM3) {
 
+/*
   if (aM2 != M2 || aM3 != M3) {
     return false;
   }
+*/
+  constexpr int M2 = 30;
+  constexpr int M3 = 36;
 
-  const uint64_t MAX_BLOOM = (LSB << M3) - LSB;
-  constexpr int XX = (M3 + 1) / 2; // number DNA letters to cover MAX_BLOOM
+  assert(aM2 == M2);
+  assert(aM3 == M3);
+
+  constexpr uint64_t MAX_BLOOM = (LSB << M3) - LSB;
 
   auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
 
@@ -321,6 +327,7 @@ bool kmer_lookup_work(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kme
   return true;
 }
 
+/*
 void kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, int channel, char *in_path,
                  char *o_name, int M2, const int M3) {
   // Only one of these will really run.  By making them known at compile time, we increase speed.
@@ -390,6 +397,7 @@ void kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
                 kmer_lookup_work<36, 37>(lmer_index, mmer_bloom, kmers_index, snps, channel, in_path, o_name, M2, M3));
   assert(match && "See comment for supporrted values of L and M.");
 }
+*/
 
 void display_usage(char *fname) {
   cout << "usage: " << fname
