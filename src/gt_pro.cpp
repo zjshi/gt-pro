@@ -254,9 +254,6 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
           seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
           const uint64_t kmer = min(kmer_tuple[0], kmer_tuple[1]);
 
-          dummy += kmer;
-          continue;
-
           if ((mmer_bloom[(kmer & MAX_BLOOM) / 64] >> (kmer % 64)) & 1) {
             const uint32_t lmer = kmer >> M2;
             const auto range = lmer_index[lmer];
@@ -307,7 +304,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   cerr << chrono_time() << ":  "
        << "Processed all " << ((n_lines + 3) / 4) << " reads from file " << in_path << endl;
 
-  if (dummy > 1000000000000) {
+  if (dummy > 100000000) {
     cerr << "cool" << endl;
   }
 
