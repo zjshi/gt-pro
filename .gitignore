@@ -4,4 +4,7 @@
 ._*
 
 # TeX files
-.synctex.gz
+*.synctex.gz
+*.log
+*.toc
+*.aux
