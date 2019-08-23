@@ -1,0 +1,7 @@
+\*.pyc
+
+# Mac attribute files as seen from unix
+._*
+
+# TeX files
+.synctex.gz
