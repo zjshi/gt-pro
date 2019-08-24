@@ -44,8 +44,17 @@
 \title{\vskip -1.2in {GT-Pro Query Engine} \vskip -0.5in}
 \date{}
 
-\newcommand\AllelesTable{\textbf{Alleles \hbox{Table}}}
-\newcommand\KmersTable{\textbf{Kmers \hbox{Table}}}
+% Macros for the names of various data structures and objects.
+\newcommand\datastructure[1]{\hbox{\textbf{#1}}}
+\newcommand\AllelesTable{\datastructure{Alleles Table}}
+\newcommand\KmersTable{\datastructure{Kmers Table}}
+\newcommand\IndexArray{\datastructure{Index Array}}
+\newcommand\Index{\datastructure{Index}}
+\newcommand\BloomFilter{\datastructure{Bloom Filter}}
+
+% Macro to render a variable name or identifier.
+\newcommand\var[1]{\hbox{\textsl{#1}}}
+
 
 \begin{document}
 \maketitle
@@ -87,35 +96,35 @@ The database consists of two tables.
 \begin{bytefield}[bitwidth=0.9em, bitheight=4em]{32}
 
  \bitheader{0-31} \\
- 
+
  \begin{leftwordgroup}{\parbox{3.5em}{\small\raggedright 2.86\\ billion\\kmers \\ \vskip 1em \textbf{Colex}\\ \textbf{order} \\ on nt. \\ seq.}}
 
  \bitbox{5}{\small{snp_offset}} & \bitbox{27}{\small{allele_index}}\\
- 
+
  \bitbox{5}{\small{snp_offset}} & \bitbox{27}{\small{allele_index}} \\
- 
+
  \wordbox[lrt]{1}{\vskip 1.9em 2,856,121,626 rows \\
                   \vskip 0.5em 10.64 GB total \\ } \\
- 
+
  \skippedwords \\
- 
+
  \wordbox[lrb]{1}{} \\
 
  \bitbox{5}{\small{snp_offset}} & \bitbox{27}{\small{allele_index}}
- 
+
 \end{leftwordgroup}
- 
+
 \end{bytefield}
 \figurebreak
 \vskip 1em
 
-Each entry in the \KmersTable{} is comprised of a 5 bit \textit{snp_offset} and 27 bit \textit{allele_index} that together represent a kmer.
+Each entry in the \KmersTable{} is comprised of a 5 bit \var{snp_offset} and 27 bit \var{allele_index} that together represent a kmer.
 
-The \textit{snp_offset} identifies the SNP position within the kmer.  It's the count of nucleotides in the kmer that precede the SNP, a number between 0 and 30.
+The \var{snp_offset} identifies the SNP position within the kmer.  It's the count of nucleotides in the kmer that precede the SNP, a number between 0 and 30.
 
-The \textit{allele_index} points to an entry in the \AllelesTable{} from which the kmer's entire sequence can be recovered through the formula
+The \var{allele_index} points to an entry in the \AllelesTable{} from which the kmer's entire sequence can be recovered through the formula
 $$
-\hbox{\textit{kmer_seq}} := \hbox{substr}(\hbox{\textit{allele_seq}}, \,30 - \hbox{\textit{snp_offset}}, \,31)
+\var{kmer_seq} := \hbox{substr}(\var{allele_seq}, \,\hbox{30} - \var{snp_offset}, \,\hbox{31})
 $$
 See subsection "Overlap Encoding" below.
 \pagebreak
@@ -123,9 +132,10 @@ See subsection "Overlap Encoding" below.
 \subsection{Overlap Encoding}
 
 
-The major and minor allele of a SNP may each be covered by up to 31 different kmers, with \textsl{snp_offset} values 0, 1, $\ldots$ 30.  Some kmers would be absent from the database because they bear too little information about their origin (for instance, kmers that occur in multiple species).
+The major and minor allele of a SNP may each be covered by up to 31 different kmers, with \var{snp_offset} values 0, 1, $\ldots$ 30.  Some kmers would be absent from the database because they bear too little information about their origin (for instance, kmers that occur in multiple species).
 
-In the illustration below, only 6 of the possible 31 kmers are present for the major allele, and 5 for the minor allele.  There are two distinct kmers with \textsl{\hbox{snp_offset = 10}}.  The first of those covers \textsl{allele_seq_major} and the second covers \textsl{allele_seq_minor}.
+In the illustration below, only 6 of the possible 31 kmers are present for the major allele, and 5 for the minor allele.  There are two distinct kmers with \var{snp_offset}~=~10.  The first of those covers \var{allele_seq_major} and the second covers \var{allele_seq_minor}.
+
 \newcommand\snp[1]{\textcolor{orange}{\fbox{\textbf{#1}}}}
 \newcommand\snpp[1]{\textcolor{brown}{\fbox{\textbf{#1}}}}
 
@@ -154,9 +164,9 @@ In the illustration below, only 6 of the possible 31 kmers are present for the m
 }}
 \figurebreak
 
-Altogether, the 11 kmers above contain 341 base pairs.  Their shared \hbox{\textsl{allele_seq}}'s (major and minor) comprise only 122 base pairs, from which the kmers can be recovered fully.  That's how overlap encoding achieves high compression. 
+Altogether, the 11 kmers above contain 341 base pairs.  Their shared \var{allele_seq}'s (major and minor) comprise only 122 base pairs, from which the kmers can be recovered fully.  The compression ratio is signifficantly higher in the actual database, where the average number of kmers per allele is 28.
 
-Each 61-bp \textsl{allele_seq} is stored into a separate entry in the \AllelesTable{}.
+Each 61-bp \var{allele_seq} is stored into a separate entry in the \AllelesTable{}.
 
 \pagebreak
 
@@ -195,7 +205,7 @@ If multiple SNPs occur in close proximity, some of the overlapping kmers may not
 
 \figurebreak
 
-Encoding the discordant kmers in this case requires the introduction of another entry into the \AllelesTable to represent \textsl{allele_seq_minor_2}.  In some cases, up to 11 SNPs have been seen in such close proximity.  Approximately 1.8 percent of allele table entries exist for this purpose.
+Encoding the discordant kmers in this case requires the introduction of another entry into the \AllelesTable{} to represent \var{allele_seq_minor_2}.  In some cases, up to 11 SNPs have been seen in such close proximity.  Approximately 1.8 percent of entries in the \AllelesTable{} exist for this purpose.
 
 \subsection{Alleles Table}
 
@@ -204,7 +214,7 @@ Encoding the discordant kmers in this case requires the introduction of another 
 
 \begin{bytefield}[bitwidth=0.54em]{64}
  \bitheader{0,1,55,61,63} \\
- 
+
  \begin{rightwordgroup}{\footnotesize{allele}\\ \footnotesize{entry}\\ \footnotesize{0}}
 
  \bitbox{2}{\tiny{XX}} &
@@ -214,29 +224,29 @@ Encoding the discordant kmers in this case requires the introduction of another 
  \bitbox{2}{\tiny{SNP}} &
  \bitbox{60}{\footnotesize{allele_seq:  30 bp after SNP (60 bits)}} &
  \bitbox{2}{\tiny{XX}} \\
- 
+
  \bitbox{56}{\footnotesize{snp_coord (56 bits)}} &
  \bitbox{8}{\footnotesize{reserved}}
  \end{rightwordgroup}\\ \\
- 
+
  \begin{rightwordgroup}{\footnotesize{allele}\\ \footnotesize{entry}\\ \footnotesize{1}}
 
  \bitbox{2}{\tiny{XX}} &
  \bitbox{60}{\footnotesize{allele_seq:  30 bp before SNP (60 bits)}} &
  \bitbox{2}{\tiny{SNP}} \\
- 
+
  \bitbox{2}{\tiny{SNP}} &
  \bitbox{60}{\footnotesize{allele_seq:  30 bp after SNP (60 bits)}} &
  \bitbox{2}{\tiny{XX}} \\
- 
+
  \bitbox{56}{\footnotesize{snp_coord (56 bits)}} &
  \bitbox{8}{\footnotesize{reserved}}
  \end{rightwordgroup}\\ \\
 
  \wordbox[lrt]{4}{\vskip 1em \footnotesize{107,565,805 alleles (1.8\% multi-SNP) \\ \vskip 0.5em for 52.8 million SNPs \\ \vskip 0.5em 3 dwords per allele \\ \vskip 0.5em 2.4 GB total}} \\
- 
+
  \skippedwords \\
- 
+
  \wordbox[lrb]{1}{} \\ \\
 
  \begin{rightwordgroup}{\footnotesize{allele}\\ \footnotesize{entry}\\ \footnotesize{N -- 1}}
@@ -244,11 +254,11 @@ Encoding the discordant kmers in this case requires the introduction of another 
  \bitbox{2}{\tiny{XX}} &
  \bitbox{60}{\footnotesize{allele_seq:  30 bp before SNP (60 bits)}} &
  \bitbox{2}{\tiny{SNP}} \\
- 
+
  \bitbox{2}{\tiny{SNP}} &
  \bitbox{60}{\footnotesize{allele_seq:  30 bp after SNP (60 bits)}} &
  \bitbox{2}{\tiny{XX}} \\
- 
+
  \bitbox{56}{\footnotesize{snp_coord (56 bits)}} &
  \bitbox{8}{\footnotesize{reserved}}
  \end{rightwordgroup}\\ \\
@@ -258,7 +268,7 @@ Encoding the discordant kmers in this case requires the introduction of another 
 \figurebreak
 
 
-Each entry in the \AllelesTable{} represents a specific SNP and allele by encoding the 61 nucleotide \hbox{\textit{allele_seq}} centered on the SNP, along with the species id (6 decimal digits), major/minor allele indicator (0 or 1), and genomic coordinate of the SNP.  The allele nucleotide itself, \hbox{\textsl{allele_seq(30)}}, is represented redundantly in dwords 0 and 1.
+Each entry in the \AllelesTable{} represents a specific SNP and allele by encoding the 61 nucleotide \hbox{\textit{allele_seq}} centered on the SNP, along with the species id (6 decimal digits), major/minor allele indicator (0 or 1), and genomic coordinate of the SNP.  The allele nucleotide itself, \var{allele_seq(30)}, is represented redundantly in dwords 0 and 1.
 
 \pagebreak
 
@@ -268,34 +278,36 @@ Each entry in the \AllelesTable{} represents a specific SNP and allele by encodi
 \subsection{Index}
 
 
-For any nucleotide sequence \textsl{S}, the kmers that end with \textsl{S} occupy consecutive rows in the \KmersTable{}.  They can be quickly located with an index that simply maps \textsl{S} to the range of rows that share \textsl{S}.
+For any nucleotide sequence \var{S}, the kmers that end with \var{S} occupy consecutive rows in the \KmersTable{}.  They can be quickly located with an index that simply maps \var{S} to the range of rows that share \var{S}.
 
-For any given 31-bp kmer \textsl{query}, the following algorithm locates every allele in the database that is covered by \textsl{query}.
+The following algorithm locates every allele in the database that is covered by a given 31-bp kmer \var{query}.
 \begin{itemize}
-\item Look up 16-bp suffix of \textsl{query} in \textbf{Index}.
-\item If found, examine all \KmersTable{} entries referred by \textbf{Index}.
-\item Decode each referred entry through \AllelesTable{} to recover a \textsl{db_kmer} that's a possible match for \textsl{query}.  Compare entire nucleotide sequence of \textsl{db_kmer} to \textsl{query}. If exact match, emit allele info.
+\item Look up 16-bp suffix of \var{query} in \Index{}.
+\item If found, examine range of entries in \KmersTable{} referred by \Index{}.
+\item Decode each referred kmer entry through \AllelesTable{} to recover a \var{db_kmer} that's a possible match for \var{query}.  Compare entire nucleotide sequence of \var{db_kmer} to \var{query}. On exact match, emit allele info.
 \end{itemize}
 
 
 \subsection{Bloom Filter}
-A similar technique helps reject queries with absent prefix.  The set of 18-bit kmer prefixes in the database is encoded as a bit vector and consulted for each query.  We call this a bloom filter.
+The index above quickly rejects kmer queries whose suffix is absent from the database.  A similar method rejects queries with absent prefix:  the set of 18-bp kmer prefixes in the database is encoded as a bit vector and consulted for each query.  We call that a bloom filter.
 
-In more detail, a vector of $\text{2}^\text{36}$ bits is initialized so \hbox{\textsl{bit_vector[bit_address]}} is 1 if and only if interpreting \textsl{bit_address} itself as an 18-bp nucleotide sequence (see next section) yields the prefix of some kmer in the database.
+In more detail, a vector of $\text{2}^\text{36}$ bits (3 GB) is initialized so \var{bit_vector[bit_address]} is 1 if and only if interpreting \var{bit_address} itself as an 18-bp nucleotide sequence (see next section) yields the prefix of some kmer in the database.
 
 The amended query algorithm is now
 \begin{itemize}
-\item Look up \textsl{query} prefix in \textbf{Bloom Filter}.
-\item If found, look up \textsl{query} suffix in \textbf{Index}.
+\item Look up \var{query} prefix in \BloomFilter{}.
+\item If found, look up \var{query} suffix in \Index{}.
 \item If found, examine all \KmersTable{} entries referred by the index one by one, as before.
 \end{itemize}
 
 Why exactly 16 nucleotide suffix and 18 nucleotide prefix?  GT-Pro supports a range of values for these parameters, with defaults that perform best for the available amount of RAM.  See figure "Query Speed vs Memory Footprint".
 
-
 \pagebreak
 
 \subsection{Integer Encoding}
+
+\newcommand\sufS{\texttt{\var{*S}}}
+\newcommand\sufSb{\texttt{\var{*S}\textsubscript{bin}}}
 
 
 In binary encoding each nucleotide takes 2 bits.
@@ -304,20 +316,20 @@ Nucleotide strings are encoded so that their initial characters map to lower mem
 
 A common trick is to interpret a nucleotide sequence as an integer, use that integer as an array index, or sort those integers to create a substrate for efficient sequence lookups.
 
-The following table illustrates how integer sort order on the encodings corresponds to \textbf{colex order} on the original nucleotide strings.
+The following table illustrates how integer sort order on the encodings corresponds to \textbf{colex order} on the original nucleotide strings.  Colex means lexicographic on the reversed strings.  For this illustration suppose that every sequence in the table ends with the same suffix, represented by \sufS{}.
 
 \figurebreak
 
 \hbox{\vbox{
 \begin{alltt}
-Nucleotide    Binary Encoding         Integer
-Sequence      (LSB {\ldots} MSB)               Value
-\rule[0.2em]{24em}{0.4pt}
-AACGCCA\ldots      00001001101000\ldots           1,424
-AACGCGA\ldots      00001001100100\ldots           2,448
-AACGTGA\ldots      00001001110100\ldots           2,960
-AACGAGT\ldots      00001001000111\ldots          14,480
-AACGCGT\ldots      00001001100111\ldots          14,736
+Nucleotide     Binary Encoding                     Integer
+Sequence       (LSB {\ldots} MSB)                           Value
+\rule[0.2em]{31em}{0.4pt}
+CATGCCA\sufS      10001101101000\sufSb          1,457 + 2\textsuperscript{14}\sufSb
+ATCGCGA\sufS      00111001100100\sufSb          2,460 + 2\textsuperscript{14}\sufSb
+GCTGTGA\sufS      01101101110100\sufSb          2,998 + 2\textsuperscript{14}\sufSb
+TACTAGT\sufS      11001011000111\sufSb         14,547 + 2\textsuperscript{14}\sufSb
+AACGCGT\sufS      00001001100111\sufSb         14,736 + 2\textsuperscript{14}\sufSb
 \end{alltt}
 }}
 
@@ -329,44 +341,43 @@ When constructing the index and bloom filter we may use odd numbers of bits from
 
 \subsection{Representing the Index with an Array}
 
-
 Conceptually, the index is a map from nucleotide strings -- all possible kmer suffixes -- to row ranges in the \KmersTable{}.  Constraining the domain of the map to suffixes of a specific length -- usually up to 16 nucleotides -- makes the RAM requirements acceptable.
 
 As the database contains 2.8 billion kmers, the 16-bp domain of this map (with 4.3 billion possible suffixes) is densely covered.  Therefore, a simple linear array is better-suited to represent this map than, say, a hash table.
 
-Each entry of the \textbf{Index Array} is comprised of a 48-bit \textsl{range_start} and 16-bit \textsl{range_length} representing a range of rows in the \KmersTable{} that all share the same suffix.
+Each entry of the \IndexArray{} is comprised of a 48-bit \var{range_start} and 16-bit \var{range_length} representing a range of rows in the \KmersTable{} that all share the same suffix.
 
-To lookup a suffix string \textsl{S}, first encode \textsl{S} as an integer \textsl{I}, then find element \textsl{I} in the \textbf{Index Array}.  If that element is zero, the suffix does not occur in the database. Otherwise, the element's \textsl{range_start} and \textsl{range_length} tell you which \KmersTable{} rows to examine.
+To lookup a suffix string \var{S}, first encode \var{S} as an integer \var{I}, then find element \var{I} in the \IndexArray{}.  If that element is zero, the suffix does not occur in the database. Otherwise, the element's \var{range_start} and \var{range_length} tell you which \KmersTable{} rows to examine.
 
 \figurebreak
 
 \vskip 1em
 \begin{bytefield}[bitwidth=0.5em]{64}
  \bitheader{0,47,63}\\
- 
+
  \begin{rightwordgroup}{\texttt{AAA{\ldots}AA}}
  \bitbox{48}{\footnotesize range_start} & \bitbox{16}{\footnotesize range_length}
  \end{rightwordgroup}\\
- 
+
  \begin{rightwordgroup}{\texttt{CAA{\ldots}AA}}
  \bitbox{48}{\footnotesize range_start} & \bitbox{16}{\footnotesize range_length}
  \end{rightwordgroup}\\
- 
+
  \begin{rightwordgroup}{\texttt{GAA{\ldots}AA}}
  \bitbox{48}{\footnotesize range_start} & \bitbox{16}{\footnotesize range_length}
  \end{rightwordgroup}\\
- 
+
  \wordbox[lrt]{2}{\footnotesize\vskip 1.9em 4,294,967,296 rows \\
                   \footnotesize\vskip 0.5em 32 GB total \\ } \\
- 
+
  \skippedwords \\
- 
+
  \wordbox[lrb]{1}{} \\
 
  \begin{rightwordgroup}{\texttt{TTT{\ldots}TT}}
  \bitbox{48}{\footnotesize range_start} & \bitbox{16}{\footnotesize range_length}
  \end{rightwordgroup}\\
- 
+
 \end{bytefield}
 
 \figurebreak
@@ -427,23 +438,21 @@ The selection of samples and reads is arbitrary.  For bowtie and pileup, the cho
 \subsection{Reducing Variance in the Compute Environment}
 
 
-Great care was taken to obtain reliable and consistent performance measurements from run to run.   In the server environment, this involved choosing a machine with a single NUMA node,
+Great care has been taken to obtain reliable and consistent performance measurements from run to run.   In the server environment, this involves choosing a machine with a single NUMA node,
 using the \texttt{taskset} utility to ensure each CPU core runs the same number of threads, and disabling the Linux memory defragmenter via
 \begin{alltt}
     echo never > /sys/kernel/mm/transparent_hugepage/defrag
 \end{alltt}
 
-The effectiveness of these measures is evident in figure "Query Speed vs Memory Footprint", where the 8 distinct measurements for every server configuration overlap closely.  We did not control these system parameters on the MacBook Pro laptop, and the same figure reflects noticeable variance in the laptop data. 
+The effectiveness of these measures is evident in figure "Query Speed vs Memory Footprint", where the 8 distinct measurements for every server configuration overlap closely.  These system parameters are not controlled on the MacBook Pro laptop, and the same figure reflects noticeable variance in the laptop data.
 
-The reduced variance in server performance enables us to iterate efficiently even on minor algorithmic improvements.  It also allows us to sweep across a large number of possible choices for the index and bloom filter sizes, characterizing the optimal configuration as a function of available RAM.
+The reduced variance in server performance enables quick evaluation of even minute implementation choices, resulting in the simplest possible implementation that does not compromise performance.
+
+The same server environment is used for all measurements, including Bowtie + Pileup, with continuous CPU and I/O monitoring via \texttt{sar} and \texttt{htop} to assure full machine utlization.
 
 Users of GT-Pro do not need to tweak their Linux settings to achieve peak performance.  In fact, a freshly booted Linux system without any tweaks should register even higher performance.  However, that performance will tend to degrade and vary over time.  Our tweaks ensure it remains consistent for benchmarking.
 
-We ran all server tests, including Bowtie + Pileup, under the same conditions.
-
-We used \texttt{sar} and \texttt{htop} to monitor CPU and I/O utilization during server runs.
-
-No tweaks were applied to the laptop environment.
+No tweaks are applied to the laptop environment.
 
 \pagebreak
 \subsection{Multicore Performance}
@@ -544,7 +553,7 @@ Operating system:
 \item Ubuntu 7.4.0 -- 18.04.01.
 \end{itemize}
 
-Compiler: 
+Compiler:
 \begin{itemize}
 \item G++ 7.4.0.
 \end{itemize}
@@ -609,7 +618,7 @@ Operating system:
 \item Mac OS X 10.14.6
 \end{itemize}
 
-Compiler: 
+Compiler:
 \begin{itemize}
 \item Apple LLVM version 10.0.1 (clang-1001.0.46.4)
 \end{itemize}
@@ -624,7 +633,7 @@ Target: x86_64-apple-darwin18.7.0
 Thread model: posix
 InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
 
-> \textbf{\textcolor{brown}{sysctl -n machdep.cpu.brand_string}}                                                                                                                                                 
+> \textbf{\textcolor{brown}{sysctl -n machdep.cpu.brand_string}}
 Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
 \end{alltt}
 
