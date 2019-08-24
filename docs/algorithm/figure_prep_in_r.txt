@@ -1,0 +1,61 @@
+R Figure Preparation -- GT Pro Query Engine Performance Measurements
+
+
+----------------------------------------------------------------------------
+Figure: Query Speed Vs Memory Use
+----------------------------------------------------------------------------
+
+library("tidyverse")
+
+both=read.table('both-monotone.tsv', sep='\t', header=TRUE)
+
+ggplot(data=both, mapping = aes(x = max_resident_megabytes, y = queries_per_second_per_cpu_core)) + geom_point(mapping = aes(color = m, shape = l, size=machine)) + scale_size_manual(values=c(3.25, 6.5)) + scale_shape_manual(values = c(23, 25, 2, 0, 21)) + scale_color_manual(values = c('#6F6F6F', '#F43B00', '#008F00', '#9437FF', '#FF9300', '#0096FF', '#FF40FF')) + geom_smooth(se=FALSE, formula=y ~ log(x), mapping = aes(group = machine), linetype="dashed", color="#707070", size=0.66) + labs(x = "Max resident megabytes of RAM", y = "Queries per second per CPU core", title="Query Speed vs Memory Use")
+
+
+# no dashed line as per Jason Shi + geom_hline(yintercept=750, linetype="dashed", color="red") 
+
+
+
+----------------------------------------------------------------------------
+Figure: Multicore efficiency, with and without hyperthreading
+----------------------------------------------------------------------------
+
+cat <(./tally-ht.sh | sed $'s=\t2\t=\ttwo\t=') <(./tally-st.sh | grep -v threads | sed $'s=\t1\t=\tone\t=') | grep -v mean | grep -v stddev > prelim.tsv
+
+library("tidyverse")
+
+prelim=read.table('prelim.tsv', sep='\t', header=TRUE)
+
+ggplot(data=prelim, mapping = aes(x = cpu_cores, y = queries_per_second_per_cpu_core)) + geom_point(mapping = aes(shape=threads_per_cpu_core, color=threads_per_cpu_core), size=7) + geom_smooth(se=FALSE, span=1000, mapping = aes(group = threads_per_cpu_core, color = threads_per_cpu_core), linetype="dashed", size=0.66) + scale_shape_manual(values = c(1, 5)) + scale_color_manual(values = c('#FF9300', '#0096FF')) + labs(x = "CPU cores", y = "Queries per second per CPU core", title="Multicore efficiency, with and without hyperthreading") + expand_limits(x = 0, y = 0) + labs(shape = "Threads\nper core", color = "Threads\nper core")
+
+
+
+----------------------------------------------------------------------------
+Figure: Multicore performance, with and without hyperthreading
+----------------------------------------------------------------------------
+
+library("tidyverse")
+
+prelim=read.table('prelim.tsv', sep='\t', header=TRUE)
+
+ggplot(data=prelim, mapping = aes(x = cpu_cores, y = queries_per_second)) + geom_point(mapping = aes(shape=threads_per_cpu_core, color=threads_per_cpu_core), size=7) + geom_smooth(se=FALSE, span=1000, mapping = aes(group = threads_per_cpu_core, color = threads_per_cpu_core), linetype="dashed", size=0.66) + labs(x = "CPU cores", y = "Queries per second", title="Multicore performance, with and without hyperthreading")  + scale_shape_manual(values = c(1, 5)) + scale_color_manual(values = c('#FF9300', '#0096FF')) + expand_limits(x = 0, y = 0) + labs(shape = "Threads\nper core", color = "Threads\nper core") 
+
+
+
+
+----------------------------------------------------------------------------
+Figure: Performance comparison of 3 methods
+----------------------------------------------------------------------------
+
+library("tidyverse")
+
+comparison2=read.table('comparison-two.tsv', sep='\t', header=TRUE)
+
+
+ggplot(data=comparison2, mapping = aes(x = method, y = queries_per_second, fill=method)) + geom_bar(stat="identity") + geom_text(aes(label=format(queries_per_second, big.mark = ",", scientific = FALSE)), position=position_dodge(width=1), hjust=-0.2, vjust=1.2) + geom_text(aes(label=method), position=position_dodge(width=1), hjust=-0.15, vjust=-0.8) + coord_flip() + labs(y = "Queries per second", title="Performance comparison of 3 methods") + theme(legend.title=element_blank(), legend.position="none", axis.title.y=element_blank(), axis.ticks.x=element_blank(), axis.ticks.y=element_blank(), axis.text.x=element_blank(), axis.text.y=element_blank()) + expand_limits(x = 0, y = 1100000)
+
+
+queries_per_second	method
+999158	gtpro-server
+18036	bowtie-server
+212203	gtpro-laptop
