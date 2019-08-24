@@ -278,9 +278,9 @@ Each entry in the \AllelesTable{} represents a specific SNP and allele by encodi
 \subsection{Index}
 
 
-For any nucleotide sequence \var{S}, the kmers that end with \var{S} occupy consecutive rows in the \KmersTable{}.  They can be quickly located with an index that simply maps \var{S} to the range of rows that share \var{S}.
+For any nucleotide sequence \var{S}, the kmers that end with \var{S} occupy consecutive rows in the \KmersTable{}.  They can be located quickly with an index that simply maps \var{S} to the range of rows that share \var{S}.
 
-The following algorithm locates every allele in the database that is covered by a given 31-bp kmer \var{query}.
+The following algorithm visits every allele in the database that is covered by a given 31-bp kmer \var{query}.
 \begin{itemize}
 \item Look up 16-bp suffix of \var{query} in \Index{}.
 \item If found, examine range of entries in \KmersTable{} referred by \Index{}.
@@ -316,7 +316,7 @@ Nucleotide strings are encoded so that their initial characters map to lower mem
 
 A common trick is to interpret a nucleotide sequence as an integer, use that integer as an array index, or sort those integers to create a substrate for efficient sequence lookups.
 
-The following table illustrates how integer sort order on the encodings corresponds to \textbf{colex order} on the original nucleotide strings.  Colex means lexicographic on the reversed strings.  For this illustration suppose that every sequence in the table ends with the same suffix, represented by \sufS{}.
+The following table illustrates the correspondence between integer sort order on the encodings and \textbf{colex order} on the nucleotide strings.  Colex means lexicographic on the reversed strings (reading right to left).  The illustration supposes that every sequence in the table ends with the same suffix, represented by \sufS{}.
 
 \figurebreak
 
@@ -335,16 +335,17 @@ AACGCGT\sufS      00001001100111\sufSb         14,736 + 2\textsuperscript{14}\su
 
 \figurebreak
 
-When constructing the index and bloom filter we may use odd numbers of bits from these integer encodings in order to fine-tune memory use (see parameters \texttt{-l} and \texttt{-m} in figure "Query Speed vs Memory Footprint").
+When constructing the index and bloom filter, using odd numbers of bits from these integer encodings helps fine-tune memory use (see parameters \texttt{-l} and \texttt{-m} in figure "Query Speed vs Memory Footprint").
 
 \pagebreak
 
 \subsection{Representing the Index with an Array}
 
-Conceptually, the index is a map from nucleotide strings -- all possible kmer suffixes -- to row ranges in the \KmersTable{}.  Constraining the domain of the map to suffixes of a specific length -- usually up to 16 nucleotides -- makes the RAM requirements acceptable.
+Conceptually, the index is a map from nucleotide strings -- all possible kmer suffixes -- to row ranges in the \KmersTable{}.  Constraining the domain of the map to suffixes of a specific length -- usually up to 16 nucleotides -- makes the RAM requirements for representing the index quite acceptable.
 
-As the database contains 2.8 billion kmers, the 16-bp domain of this map (with 4.3 billion possible suffixes) is densely covered.  Therefore, a simple linear array is better-suited to represent this map than, say, a hash table.
+As the database contains 2.8 billion kmers, the 16-bp domain of the index map (with 4.3 billion possible suffixes) is densely covered.  Therefore, a simple linear array is better-suited to represent this map than, say, a hash table.
 
+% TODO: Try 32-bit range start and 8-bit range len.  We only have 2.8 billion kmers now.  That's new.
 Each entry of the \IndexArray{} is comprised of a 48-bit \var{range_start} and 16-bit \var{range_length} representing a range of rows in the \KmersTable{} that all share the same suffix.
 
 To lookup a suffix string \var{S}, first encode \var{S} as an integer \var{I}, then find element \var{I} in the \IndexArray{}.  If that element is zero, the suffix does not occur in the database. Otherwise, the element's \var{range_start} and \var{range_length} tell you which \KmersTable{} rows to examine.
