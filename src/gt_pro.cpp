@@ -92,6 +92,130 @@ constexpr auto SNP_MAX_REAL_ID = (LSB << SNP_REAL_ID_BITS) - LSB;
 constexpr auto MAX_MMAP_GB = 64 * 1024;
 constexpr auto MAX_END = MAX_MMAP_GB * (LSB << 30) / 8;
 
+const char *compressors[][3] = {
+    {".lz4", "lz4", "untested"},
+    {".bz2", "lbzip2", "untested"},
+    {".gz", "gzip", "untested"},
+};
+
+extern int errno;
+
+int test_compressor(const char *compressor) {
+  // Return "true" iff the specified compressor is available on the system and
+  // has successfully compressed and decompressed our test string.
+  //
+  // Usually the compressor is lz4, lbzip2, etc.
+  //
+  // Note: BASH-compatible shell required.
+  assert(errno == 0);
+  const size_t MAX_CMD_LEN = 4095;
+  char *line_str = NULL;
+  size_t line_cap = 0;
+  const char *test_str = "hello there from gt pro testing testing 1 2 3";
+  const size_t test_str_len = strlen(test_str);
+  const char *cmd_pattern = "(echo '%s' | %s -c | %s -dc | cut -c1-1000 | head -1) 2>/dev/null";
+  const size_t cmd_pattern_len = strlen(cmd_pattern);
+  const size_t compressor_len = strlen(compressor);
+  const size_t cmd_len = cmd_pattern_len + test_str_len + 2 * compressor_len;
+  if (cmd_len > MAX_CMD_LEN) {
+    const size_t max_compressor_len =
+        MAX_CMD_LEN > (cmd_pattern_len + test_str_len) ? (MAX_CMD_LEN - cmd_pattern_len - test_str_len) / 2 : 0;
+    fprintf(stderr, "Compressor command length %lu exceeds supported max length %lu.\n", compressor_len, max_compressor_len);
+    return false;
+  }
+  char test_cmd[cmd_len + 1];
+  sprintf(test_cmd, cmd_pattern, test_str, compressor, compressor);
+  assert(errno == 0);
+  FILE *f = popen(test_cmd, "r");
+  if (errno == 0 && f) {
+    const auto chars_read = getline(&line_str, &line_cap, f);
+    if (errno == 0) {
+      const int exit_code = pclose(f);
+      if (errno == 0 && exit_code == 0) {
+        size_t line_len = strlen(line_str);
+        assert(line_len == chars_read);
+        if (line_len > 0 && line_str[line_len - 1] == '\n') {
+          --line_len;
+          line_str[line_len] = 0;
+        }
+        if ((line_len == test_str_len) && strcmp(test_str, line_str) == 0) {
+          return true;
+        }
+      }
+    }
+  }
+  if (line_str) {
+    free(line_str);
+  }
+  errno = 0;
+  return false;
+}
+
+int decompressor(const char *inpath) {
+  // Return the decompressor that can handle inpath's extension,
+  // or NULL if inpath does not require a decomprssor.
+  const auto pl = strlen(inpath);
+  int i = 0;
+  for (auto &comp : compressors) {
+    // comp[0] is the extension, e.g. ".gz"
+    // comp[1] is the corresponding compressor program, e.g. "gzip"
+    // comp[2] indicates if the decompressor is present and working on this system
+    const auto clen = strlen(comp[0]);
+    if (pl > clen && 0 == strcmp(inpath + pl - clen, comp[0])) {
+      if (0 == strcmp(comp[2], "untested")) {
+        comp[2] = test_compressor(comp[1]) ? "tested_and_works" : "tested_and_does_not_work";
+      }
+      return i;
+    }
+    ++i;
+  }
+  return -1;
+}
+
+FILE *popen_decompressor(const char *compressor, const char *path, const char *direction = "decompress") {
+  // Retur a pipe open for reading from gzip -dc or equivalent.
+  assert(errno == 0);
+  FILE *f = NULL;
+  const size_t MAX_CMD_LEN = 4095;
+  const char *cmd_pattern = NULL;
+  const char *flags = NULL;
+  if (0 == strcmp(direction, "decompress")) {
+    cmd_pattern = "%s -dc %s";
+    flags = "r";
+  } else if (0 == strcmp(direction, "compress")) {
+    cmd_pattern = "%s -c > %s";
+    flags = "w";
+  } else {
+    assert(false && "Unsupported direction.");
+    return NULL; // just in case asserts are disabled
+  }
+  const size_t cmd_pattern_len = strlen(cmd_pattern);
+  const size_t compressor_len = strlen(compressor);
+  const size_t path_len = strlen(path);
+  const size_t cmd_len = cmd_pattern_len + compressor_len + path_len - 4;
+  if (cmd_len > MAX_CMD_LEN) {
+    const size_t max_path_len =
+        (MAX_CMD_LEN + 4) > (cmd_pattern_len + compressor_len) ? (MAX_CMD_LEN + 4 - cmd_pattern_len - compressor_len) : 0;
+    fprintf(stderr, "ERROR: Path length %lu exceeds supported max %lu.\n", path_len, max_path_len);
+  } else {
+    char cmd[cmd_len + 1];
+    sprintf(cmd, cmd_pattern, compressor, path);
+    assert(errno == 0);
+    f = popen(cmd, flags);
+    if (errno) {
+      f = NULL;
+    }
+    if (f && ferror(f)) {
+      f = NULL;
+    }
+  }
+  return f;
+}
+
+FILE *popen_compressor(const char *compressor, const char *out_path) {
+  return popen_decompressor(compressor, out_path, "compress");
+}
+
 size_t get_fsize(const char *filename) {
   struct stat st;
   if (stat(filename, &st) == -1) {
@@ -152,6 +276,10 @@ uint64_t reverse_complement(uint64_t dna) {
 long chrono_time() {
   using namespace chrono;
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+static bool ends_with(const std::string &str, const std::string &suffix) {
+  return str.size() >= suffix.size() && 0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix);
 }
 
 int64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *const lmer_index, const uint64_t *const mmer_bloom,
@@ -411,34 +539,89 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     bool io_error;
     uint64_t error_pos;
     uint64_t n_reads;
+    FILE *input_file;
+    bool popened;
+    int decomp_idx;
+    string out_path;
     Result(int channel, const char *in_path, const char *o_name)
         : channel(channel), in_path(in_path), n_input_chunks(0), n_processed_chunks(0), finished_reading(false),
           done_with_output(false), o_name(o_name), p_kmer_matches(new vector<uint64_t>()), chars_read(0), error(false),
-          error_pos(1ULL << 48), io_error(false), n_reads(0) {}
+          error_pos(1ULL << 48), io_error(false), n_reads(0), input_file(NULL), popened(false) {
+      decomp_idx = decompressor(in_path);
+      const char *compext = "";
+      if (decomp_idx != -1) {
+        // compress output with same compressor as input
+        compext = compressors[decomp_idx][0];
+      }
+      out_path = o_name ? string(o_name) + "." + to_string(channel) + ".tsv" + compext : "/dev/stdout";
+      remove_output();
+    }
     ~Result() {
       if (p_kmer_matches) {
         delete p_kmer_matches;
         p_kmer_matches = NULL;
       }
+      close_input();
     }
-    void note_io_error() {
+    void open_input() {
+      assert(errno == 0);
+      if (decomp_idx == -1) { // no decomprefssion required
+        popened = false;
+        input_file = fopen(in_path, "r");
+      } else {
+        popened = true;
+        auto &decomp = compressors[decomp_idx];
+        if (0 == strcmp(decomp[2], "tested_and_does_not_work")) {
+          cerr << "ERROR:  Required decompressor " << decomp[1] << " is unavailable: " << in_path << endl;
+          note_io_error();
+        } else {
+          assert(0 == strcmp(decomp[2], "tested_and_works"));
+          input_file = popen_decompressor(decomp[1], in_path);
+        }
+      }
+      if (errno || input_file == NULL || ferror(input_file)) {
+        note_io_error();
+      }
+    }
+    void close_input() {
+      errno = 0;
+      finished_reading = true;
+      if (input_file) {
+        if (popened) {
+          pclose(input_file);
+        } else {
+          fclose(input_file);
+        }
+        input_file = NULL;
+        if (errno) {
+          note_io_error();
+        }
+      }
+    }
+    void note_io_error(bool quiet = false) {
       error_pos = min(error_pos, chars_read);
-      if (!(error)) {
+      if (!(error) && !(quiet)) {
         cerr << chrono_time() << ":  "
              << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
       }
       io_error = true;
       error = true;
+      if (errno) {
+        perror(in_path);
+        errno = 0;
+      }
     }
     void data_format_error(uint64_t pos = 1ULL << 48) {
       error_pos = min(error_pos, min(pos, chars_read));
       error = true;
     }
-    void write_error_info() {
-      assert(error);
+    void write_error_info(bool output_error = false) {
+      assert(error || output_error);
       auto err_path = o_name ? string(o_name) + "." + to_string(channel) + ".err" : "/dev/null";
       ofstream fh(err_path, ofstream::out | ofstream::binary);
-      if (io_error) {
+      if (output_error) {
+        fh << "[ERROR] Failed to write to output file." << endl;
+      } else if (io_error) {
         // I/O errors are reported on stderr in realtime.  Note them in the .err file.
         fh << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
       } else {
@@ -450,16 +633,48 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
       fh.close();
       delete p_kmer_matches;
       p_kmer_matches = NULL;
+      remove_output();
+    }
+    void remove_output() {
+      string rm_cmd = string("/bin/rm -f '" + out_path + "'");
+      errno = 0;
+      const auto rm_exit = system(rm_cmd.c_str()); // if this fails, well, such is life
+      if (errno || rm_exit) {
+        perror(rm_cmd.c_str());
+        errno = 0;
+        cerr << "[ERROR]:  Failed to remove pre-existing file " << out_path << ";  will not process input " << in_path << endl;
+        note_io_error(true); // quiet
+      }
     }
     void write_output() {
+      cerr << chrono_time() << ":  "
+           << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
       if (error) {
         write_error_info();
         return;
       }
-      cerr << chrono_time() << ":  "
-           << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
-      auto out_path = o_name ? string(o_name) + "." + to_string(channel) + ".tsv" : "/dev/stdout";
-      ofstream fh(out_path, ofstream::out | ofstream::binary);
+      FILE *out_file;
+      auto output_error = [&]() -> bool {
+        if (out_file == NULL || ferror(out_file)) {
+          cerr << chrono_time() << ":  "
+               << "[ERROR] Error writing output " << out_path << endl;
+          if (errno) {
+            perror(out_path.c_str());
+            errno = 0;
+          }
+          write_error_info(true);
+          return true;
+        }
+        return false;
+      };
+      if (decomp_idx != -1) {
+        out_file = popen_compressor(compressors[decomp_idx][1], out_path.c_str());
+      } else {
+        out_file = fopen(out_path.c_str(), "w");
+      }
+      if (output_error()) {
+        return;
+      }
       if (p_kmer_matches->size() == 0) {
         cerr << chrono_time() << ":  "
              << "[WARNING] found zero hits for the " << n_reads << " reads input from " << in_path << endl;
@@ -477,14 +692,24 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
           }
           ++n_snps;
           n_hits += (j - i);
-          fh << (*p_kmer_matches)[i] << '\t' << (j - i) << '\n';
+          fprintf(out_file, "%lu\t%lu\n", (*p_kmer_matches)[i], (j - i));
+          if (output_error()) {
+            return;
+          }
           i = j;
         }
         cerr << chrono_time() << ":  "
              << "[Stats] " << n_snps << " snps, " << n_reads << " reads, " << int((((double)n_hits) / n_snps) * 100) / 100.0
              << " hits/snp, for " << in_path << endl;
       }
-      fh.close();
+      if (decomp_idx == -1) {
+        fclose(out_file);
+      } else {
+        pclose(out_file);
+      }
+      if (output_error()) {
+        return;
+      }
       delete p_kmer_matches;
       p_kmer_matches = NULL;
     }
@@ -518,7 +743,6 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   int first_result_idx_not_done_with_output = 0;
   int last_result_idx_done_with_input = -1;
 
-  uint64_t total_chars = 0;
   uint64_t total_reads = 0;
 
   // bytes_leftover is the number of bytes following the last complete read that is fully contained in the chunk window
@@ -531,49 +755,41 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   int n_running_threads = 0;
 
   int channel = 0;
-  const char *in_path = input_paths[channel];
-  int fd = open(in_path, O_RDONLY);
+  results[channel]->open_input();
 
   //  Print progress update every 1 million reads.
   constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 1000 * 1000;
   uint64_t total_reads_last_update = 0;
 
-  // We may have finished_reading_all_input but some_work_remains if threads are still running
-  // or if chunk data has been buffered and is waiting to be launched in new threads.
-  bool some_work_remains = true;
-  bool finished_reading_all_input = false;
-
-  while (some_work_remains) {
+  while (channel < n_inputs) {
 
     // the initial bytes_left_over in window represent still unprocessed input from the same file;
     // now read more bytes up to the end of the window
     ssize_t bytes_read;
-    if (channel < n_inputs && results[channel]->error) {
+    if (!(results[channel]->error)) {
+      bytes_read = fread(window + bytes_leftover, 1, segment_size - bytes_leftover, results[channel]->input_file);
+      if (ferror(results[channel]->input_file)) {
+        results[channel]->note_io_error();
+      }
+    }
+
+    if (results[channel]->error) {
+      // wrap up this input path because of the error
       bytes_read = 0;
       bytes_leftover = 0;
-    } else {
-      bytes_read = read(fd, window + bytes_leftover, segment_size - bytes_leftover);
-    }
-    if (bytes_read == (ssize_t)-1) {
-      assert(channel < n_inputs);
-      results[channel]->note_io_error();
-      continue;
     }
 
     const auto bytes_in_window = bytes_leftover + bytes_read;
     if (bytes_in_window == 0) {
-      // we are done for this file
-      close(fd);
-      results[channel]->finished_reading = true;
+      // Done with this input path
+      results[channel]->close_input();
       if (channel > last_result_idx_done_with_input) {
         last_result_idx_done_with_input = channel;
       }
       ++channel;
-      if (channel == n_inputs) {
-        finished_reading_all_input = true;
-      } else {
-        in_path = input_paths[channel];
-        fd = open(in_path, O_RDONLY);
+      if (channel < n_inputs) {
+        // Read chunk from next input path
+        results[channel]->open_input();
         continue;
       }
     } else {
@@ -581,22 +797,21 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
       chunk_channel[chunk_idx] = channel;
     }
 
+    assert(channel < n_inputs || bytes_in_window == 0);
+    assert(channel < n_inputs || bytes_read == 0);
+
     if (bytes_in_window > 0 && window[0] != '@') {
       results[channel]->data_format_error();
       continue;
     }
 
-    total_chars += bytes_read;
     if (bytes_read) {
-      assert(channel < n_inputs);
       results[channel]->chars_read += bytes_read;
     }
 
     char *last_read_addr = last_read(window, bytes_in_window);
-
     if (bytes_in_window > 0 && last_read_addr == NULL) {
       // TODO: Count lines here to report a more useful error message.
-      assert(channel < n_inputs);
       results[channel]->data_format_error();
       continue;
     }
@@ -606,7 +821,6 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     actual_size[chunk_idx] = bytes_in_chunk;
     if (bytes_in_window) {
       // the offset in file only matters if there are bytes in the chunk (otherwise the chunk won't be launched on a thread)
-      assert(channel < n_inputs);
       offset_in_file[chunk_idx] = results[channel]->chars_read - bytes_in_window;
     }
     bytes_leftover = bytes_in_window - bytes_in_chunk;
@@ -630,8 +844,9 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
       {
         vector<uint64_t> kmt;
         n_reads = kmer_lookup_chunk(&kmt, lmer_index, mmer_bloom, kmers_index, snps, buffer_addr + segment_size * my_chunk_idx,
-                                    actual_size[my_chunk_idx], M2, M3, in_path, s_start);
+                                    actual_size[my_chunk_idx], M2, M3, results[chunk_channel[my_chunk_idx]]->in_path, s_start);
         if (n_reads < 0) {
+          // if negative, n_reads isn't actually a count of reads;  it's a count of chars before the error
           results[chunk_channel[my_chunk_idx]]->data_format_error(offset_in_file[my_chunk_idx] - n_reads);
         }
         results[chunk_channel[my_chunk_idx]]->merge_kmer_matches(kmt, n_reads);
@@ -653,6 +868,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 
     // wait for thread slot or chunk slot to free up
     int ready_to_fill_chunk_idx = -1;
+    bool some_work_remains = true;
     while (some_work_remains && ready_to_fill_chunk_idx == -1) {
       unique_lock<mutex> lk(mtx);
       int ready_to_run_chunk_idx = -1;
@@ -683,13 +899,13 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
           }
         }
         // Are we totally done?  This means no more input, no more chunks to launch, and no more active threads.
-        if (finished_reading_all_input && n_running_threads == 0) {
+        if (channel == n_inputs && n_running_threads == 0) {
           // Here 0 == n_running_threads < n_threads, so the loop above didn't find a ready_to_run_chunk_idx.
           some_work_remains = false;
           return true;
         }
         // If we got here, we can't launch a new query thread.  Can we at least fill a new chunk window with input?
-        if (!(finished_reading_all_input)) {
+        if (channel < n_inputs) {
           for (int i = 0; i < n_chunks; ++i) {
             if (actual_size[i] == 0) {
               ready_to_fill_chunk_idx = i;
@@ -718,7 +934,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
       }
     }
 
-    if (finished_reading_all_input) {
+    if (channel == n_inputs) {
       assert(!(some_work_remains));
       assert(n_running_threads == 0);
       assert(ready_to_fill_chunk_idx == -1);
@@ -884,6 +1100,8 @@ struct SNPSeq {
 };
 
 int main(int argc, char **argv) {
+
+  errno = 0;
 
   extern char *optarg;
   extern int optind;
