@@ -270,6 +270,7 @@ Encoding the discordant kmers in this case requires the introduction of another 
 
 Each entry in the \AllelesTable{} represents a specific SNP and allele by encoding the 61 nucleotide \hbox{\textit{allele_seq}} centered on the SNP, along with the species id (6 decimal digits), major/minor allele indicator (0 or 1), and genomic coordinate of the SNP.  The allele nucleotide itself, \var{allele_seq(30)}, is represented redundantly in dwords 0 and 1.
 
+
 \pagebreak
 
 \section{Query Acceleration}
@@ -301,8 +302,6 @@ The amended query algorithm is now
 \end{itemize}
 
 Why exactly 16 nucleotide suffix and 18 nucleotide prefix?  GT-Pro supports a range of values for these parameters, with defaults that perform best for the available amount of RAM.  See figure "Query Speed vs Memory Footprint".
-
-\pagebreak
 
 \subsection{Integer Encoding}
 
@@ -336,6 +335,14 @@ AACGCGT\sufS      00001001100111\sufSb         14,736 + 2\textsuperscript{14}\su
 \figurebreak
 
 When constructing the index and bloom filter, using odd numbers of bits from these integer encodings helps fine-tune memory use (see parameters \texttt{-l} and \texttt{-m} in figure "Query Speed vs Memory Footprint").
+
+\subsection{Canonical Orientation}
+
+To avoid running separate queries for the forward and reverse-complement orientation of each input sequence, we query for the orientation whose integer encoding is smaller.
+
+Correspondingly, when sorting the \KmersTable{} to build the index, the sort key for each (forward, rc) kmer pair is the element of that pair whose integer encoding is smaller.
+
+An extra 64-bit integer comparison of \var{query} to \var{reverse_complement(db_kmer)} is needed in case the recovered \var{db_kmer} from the \AllelesTable{} is for the opposite DNA strand from \var{query}.  That is much cheaper than the extra memory lookup it avoids.  
 
 \pagebreak
 
