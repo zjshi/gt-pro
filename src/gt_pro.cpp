@@ -342,10 +342,19 @@ char *last_read(const char *window, const int bytes_in_window) {
   return NULL;
 }
 
-bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, const int n_inputs,
-                 char **input_paths, char *o_name, const int M2, const int M3, const int n_threads) {
+bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, int n_inputs,
+                 const char *const *input_paths, char *o_name, const int M2, const int M3, const int n_threads) {
 
   auto s_start = chrono_time();
+  const char *stdin = "/dev/stdin";
+
+  if (n_inputs == 0 || input_paths == NULL || o_name == NULL) {
+    cerr << chrono_time() << ":  [INFO] Will input reads from stdin and output snps to stdout." << endl;
+    cerr << chrono_time() << ":  [INFO] Output will appear only after stdin reaches EOF." << endl;
+    n_inputs = 1;
+    input_paths = &stdin;
+    o_name = NULL;
+  }
 
   // In this design we have a single reader doing all the I/O (this function),
   // and up to n parallel query threads.  The reader grabs buffer space
@@ -427,7 +436,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     }
     void write_error_info() {
       assert(error);
-      auto err_path = string(o_name) + "." + to_string(channel) + ".err";
+      auto err_path = o_name ? string(o_name) + "." + to_string(channel) + ".err" : "/dev/null";
       ofstream fh(err_path, ofstream::out | ofstream::binary);
       if (io_error) {
         // I/O errors are reported on stderr in realtime.  Note them in the .err file.
@@ -449,7 +458,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
       }
       cerr << chrono_time() << ":  "
            << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
-      auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
+      auto out_path = o_name ? string(o_name) + "." + to_string(channel) + ".tsv" : "/dev/stdout";
       ofstream fh(out_path, ofstream::out | ofstream::binary);
       if (p_kmer_matches->size() == 0) {
         cerr << chrono_time() << ":  "
@@ -749,10 +758,11 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     cerr << "Failed to process correctly " << (files_without_errors == 0 ? "all " : "") << files_with_errors << " input files."
          << endl;
   }
+  return (files_with_errors > 0);
 }
 
 void display_usage(char *fname) {
-  cout << "usage: " << fname
+  cerr << "usage: " << fname
        << " -d <sckmerdb_path: string> -t <n_threads; int; default 1> -o <out_prefix; string; default: cur_dir/out> [-h] "
           "input1 [input2 ...]\n";
 }
@@ -945,21 +955,16 @@ int main(int argc, char **argv) {
   const auto MMER_MASK = (LSB << M2) - LSB;
   const auto MAX_BLOOM = (LSB << M3) - LSB;
 
-  cout << fname << '\t' << db_path << '\t' << n_threads << "\t" << (preload ? "preload" : "mmap") << "\t" << L2 << "\t" << M3
+  cerr << fname << '\t' << db_path << '\t' << n_threads << "\t" << (preload ? "preload" : "mmap") << "\t" << L2 << "\t" << M3
        << endl;
 
   if (!dbflag) {
-    cout << "missing argument: -d <sckmerdb_path: string>\n";
+    cerr << "missing argument: -d <sckmerdb_path: string>\n";
     display_usage(fname);
     exit(1);
   }
 
   int in_pos = optind;
-  if (optind == argc) {
-    cout << "missing argument: input (>1)\n";
-    display_usage(fname);
-    exit(1);
-  }
 
   auto l_start = chrono_time();
   cerr << chrono_time() << ":  "
@@ -1314,8 +1319,8 @@ int main(int argc, char **argv) {
 
   l_start = chrono_time();
 
-  kmer_lookup(lmer_index, db_mmer_bloom.address(), db_kmer_index.address(), db_snps.address(), argc - optind, argv + optind,
-              oname, M2, M3, n_threads);
+  const auto errors = kmer_lookup(lmer_index, db_mmer_bloom.address(), db_kmer_index.address(), db_snps.address(),
+                                  argc - optind, argv + optind, oname, M2, M3, n_threads);
 
   if (fd != -1 && db_data != NULL) {
     int rc = munmap(db_data, db_filesize);
@@ -1324,8 +1329,8 @@ int main(int argc, char **argv) {
   }
 
   cerr << chrono_time() << ":  "
-       << " Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."
+       << "Totally done: " << (chrono_time() - l_start) / 1000 << " seconds elapsed processing reads, after DB was loaded."
        << endl;
 
-  return 0;
+  return errors ? EXIT_FAILURE : EXIT_SUCCESS;
 }
