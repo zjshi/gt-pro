@@ -38,6 +38,7 @@
 #include <libgen.h>
 #include <limits>
 #include <mutex>
+#include <queue>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -49,12 +50,12 @@ using namespace std;
 
 // each 8 MB chunk will run in its own thread
 // 12 MB fastq ~ 26,000 reads ~ 0.5 cpu seconds
-constexpr auto segment_size = 12 * 1024 * 1024;
+constexpr auto SEGMENT_SIZE = 12 * 1024 * 1024;
 
 // allocate 15% more chunks than query threads
 // that way query threads would never have to wait for I/O
 // 15% is a guess
-constexpr auto read_ahead_ratio = 1.15;
+constexpr auto READ_AHEAD_RATIO = 1.15;
 
 // The DB k-mers are 31-mers.
 constexpr auto K = 31;
@@ -92,21 +93,18 @@ constexpr auto SNP_MAX_REAL_ID = (LSB << SNP_REAL_ID_BITS) - LSB;
 constexpr auto MAX_MMAP_GB = 64 * 1024;
 constexpr auto MAX_END = MAX_MMAP_GB * (LSB << 30) / 8;
 
+// Ordered by preference, i.e. the best performing ones are at the top.
 const char *compressors[][3] = {
-    {".lz4", "lz4", "untested"},
-    {".bz2", "lbzip2", "untested"},
-    {".gz", "gzip", "untested"},
+    {".lz4", "lz4", "untested"}, {".bz2", "lbzip2", "untested"}, {".bz2", "bzip2", "untested"},
+    {".gz", "pigz", "untested"}, {".gz", "gzip", "untested"},
 };
 
 extern int errno;
 
 int test_compressor(const char *compressor) {
   // Return "true" iff the specified compressor is available on the system and
-  // has successfully compressed and decompressed our test string.
-  //
-  // Usually the compressor is lz4, lbzip2, etc.
-  //
-  // Note: BASH-compatible shell required.
+  // successfully compresses and decompresses our test string.
+  // BASH-compatible shell required.
   assert(errno == 0);
   const size_t MAX_CMD_LEN = 4095;
   char *line_str = NULL;
@@ -133,7 +131,7 @@ int test_compressor(const char *compressor) {
       const int exit_code = pclose(f);
       if (errno == 0 && exit_code == 0) {
         size_t line_len = strlen(line_str);
-        assert(line_len == chars_read);
+        assert(chars_read == -1 || line_len == chars_read);
         if (line_len > 0 && line_str[line_len - 1] == '\n') {
           --line_len;
           line_str[line_len] = 0;
@@ -153,9 +151,12 @@ int test_compressor(const char *compressor) {
 
 int decompressor(const char *inpath) {
   // Return the decompressor that can handle inpath's extension,
-  // or NULL if inpath does not require a decomprssor.
+  // or -1 if inpath does not require a decomprssor.  If multiple
+  // decompressors are available for the inpath extension, pick
+  // the best one that's installed on the system.
   const auto pl = strlen(inpath);
   int i = 0;
+  int required = -1;
   for (auto &comp : compressors) {
     // comp[0] is the extension, e.g. ".gz"
     // comp[1] is the corresponding compressor program, e.g. "gzip"
@@ -165,14 +166,19 @@ int decompressor(const char *inpath) {
       if (0 == strcmp(comp[2], "untested")) {
         comp[2] = test_compressor(comp[1]) ? "tested_and_works" : "tested_and_does_not_work";
       }
-      return i;
+      if (required == -1) { // remember just the first one as it's preferred
+        required = i;
+      }
+      if (0 == strcmp(comp[2], "tested_and_works")) {
+        return required;
+      }
     }
     ++i;
   }
-  return -1;
+  return required;
 }
 
-FILE *popen_decompressor(const char *compressor, const char *path, const char *direction = "decompress") {
+FILE *popen_compression_filter(const char *compressor, const char *path, const char *direction = "decompress") {
   // Retur a pipe open for reading from gzip -dc or equivalent.
   assert(errno == 0);
   FILE *f = NULL;
@@ -213,7 +219,11 @@ FILE *popen_decompressor(const char *compressor, const char *path, const char *d
 }
 
 FILE *popen_compressor(const char *compressor, const char *out_path) {
-  return popen_decompressor(compressor, out_path, "compress");
+  return popen_compression_filter(compressor, out_path, "compress");
+}
+
+FILE *popen_decompressor(const char *compressor, const char *in_path) {
+  return popen_compression_filter(compressor, in_path, "decompress");
 }
 
 size_t get_fsize(const char *filename) {
@@ -284,7 +294,7 @@ static bool ends_with(const std::string &str, const std::string &suffix) {
 
 int64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *const lmer_index, const uint64_t *const mmer_bloom,
                           const uint32_t *const kmers_index, const uint64_t *const snps, const char *const window,
-                          const int bytes_in_chunk, const int M2, const int M3, const char *const in_path, const long s_start) {
+                          const int bytes_in_chunk, const int M2, const int M3, const string &in_path, const long s_start) {
 
   const uint64_t MAX_BLOOM = (LSB << M3) - LSB;
 
@@ -470,6 +480,393 @@ char *last_read(const char *window, const int bytes_in_window) {
   return NULL;
 }
 
+struct ReadersContext {
+  // Scan this many files in parallel.  More is better for serial decompressors like gzip.
+  // Rule of thumb is one for every 4-6 physical cpu cores.
+  // TODO:  Choose default automatically, and expose on command line.
+  const int MAX_PARALLEL_READERS = 8;
+  int readers;
+  mutex mtx;
+  condition_variable cv;
+  ReadersContext() : readers(0){};
+  void acquire_reader() {
+    unique_lock<mutex> lk(mtx);
+    bool acquired = false;
+    do {
+      // cerr << "Readers " << readers << endl;
+      cv.wait(lk, [&] {
+        if (readers < MAX_PARALLEL_READERS) {
+          ++readers;
+          acquired = true;
+        }
+        return acquired;
+      });
+    } while (!(acquired));
+  };
+  void acquire_all() {
+    for (int i = 0; i < MAX_PARALLEL_READERS; ++i) {
+      acquire_reader();
+    }
+  };
+  void release_reader() {
+    unique_lock<mutex> lk(mtx);
+    assert(readers > 0);
+    --readers;
+    if (readers == MAX_PARALLEL_READERS - 1) {
+      lk.unlock();
+      cv.notify_one();
+    }
+  };
+};
+
+struct ReadersContextRelease {
+  ReadersContext &ctx;
+  ReadersContextRelease(ReadersContext &rc) : ctx(rc) {}
+  ~ReadersContextRelease() { ctx.release_reader(); }
+};
+
+struct SegmentContext {
+  // There are two references to each buffer segment (two tokens).  When a segment is
+  // acquired, both tokens are held by scan_input.  After run_queries is enqueued for
+  // the segment, one token is held by run_queries until it completes, and the other
+  // token is held by scan_input until it copies any unprocessed leftover bytes at
+  // the end of the segment to the beginning of the next segment.  When both tokens are
+  // released, the segment becomes available to be acquired again.
+  constexpr static int TOKENS_PER_SEGMENT = 2;
+  mutex mtx;
+  condition_variable cv;
+  vector<int> tokens;
+  vector<char> buffer;
+  int n_segments;
+  char *buffer_addr;
+  SegmentContext(const int n_threads) : n_segments(max(n_threads + 1, int(n_threads *READ_AHEAD_RATIO))) {
+    tokens.resize(n_segments);
+    buffer.resize(SEGMENT_SIZE * n_segments);
+    buffer_addr = buffer.data();
+  };
+  int acquire_segment(int *n_tokens) {
+    int segment_idx = -1;
+    do {
+      unique_lock<mutex> lk(mtx);
+      cv.wait(lk, [&] {
+        for (segment_idx = 0; segment_idx < n_segments; ++segment_idx) {
+          if (tokens[segment_idx] == 0) {
+            tokens[segment_idx] = TOKENS_PER_SEGMENT;
+            if (n_tokens) {
+              *n_tokens = tokens[segment_idx];
+            }
+            return true;
+          }
+        }
+        return false;
+      });
+    } while (segment_idx == -1);
+    return segment_idx;
+  };
+  void release_segment(const int segment_idx, const int n_tokens) {
+    // cerr << "Releasing " << n_tokens << " tokens for segment " << segment_idx << endl;
+    if (segment_idx < 0) {
+      assert(n_tokens == 0);
+      return;
+    }
+    if (n_tokens <= 0) {
+      assert(segment_idx < 0);
+      return;
+    }
+    unique_lock<mutex> lk(mtx);
+    assert(tokens[segment_idx] >= n_tokens);
+    tokens[segment_idx] -= n_tokens;
+    if (tokens[segment_idx] == 0) {
+      lk.unlock();
+      cv.notify_one();
+    }
+  };
+};
+
+struct Segment {
+  int idx;
+  int tokens;
+  char *start_addr;
+  char *end_addr;
+  uint64_t size;
+  uint64_t bytes_leftover;
+  SegmentContext &ctx;
+  void assert_invariant() {
+    if ((end_addr - start_addr) != (size - bytes_leftover)) {
+      cerr << "Segment invariant broken: " << end_addr << " " << bytes_leftover << " " << start_addr << " " << size << endl;
+      assert((end_addr + bytes_leftover) == (start_addr + size) && "Segment invariant broken.");
+    }
+  };
+  void reset() {
+    idx = -1;
+    tokens = 0;
+    start_addr = NULL;
+    end_addr = NULL;
+    bytes_leftover = 0;
+    size = 0;
+    assert_invariant();
+  };
+  Segment(SegmentContext &sc) : ctx(sc) { reset(); };
+  ~Segment() {
+    ctx.release_segment(idx, tokens);
+    reset();
+  };
+  void advance(FILE *input_file, const int channel) {
+    assert_invariant();
+    Segment old(*this);
+    // cerr << "Waiting to acquire segment for channel " << channel << endl;
+    idx = ctx.acquire_segment(&tokens);
+    // cerr << "Acquired segment " << idx << " for channel " << channel << endl;
+    assert(idx != old.idx);
+    start_addr = ctx.buffer_addr + idx * SEGMENT_SIZE;
+    if (old.bytes_leftover) {
+      memmove(start_addr, old.end_addr, old.bytes_leftover);
+    }
+    const auto bytes_read = fread(start_addr + old.bytes_leftover, 1, SEGMENT_SIZE - old.bytes_leftover, input_file);
+    size = bytes_read + old.bytes_leftover;
+    end_addr = start_addr + size;
+    bytes_leftover = 0;
+    assert_invariant();
+  };
+};
+
+struct Result {
+  int channel;
+  const string in_path;
+  const char *o_name;
+  int n_input_chunks, n_processed_chunks;
+  bool finished_reading;
+  bool done_with_output;
+  vector<uint64_t> *p_kmer_matches;
+  uint64_t chars_read;
+  bool error;
+  bool io_error;
+  bool output_error;
+  bool missing_decompressor;
+  uint64_t error_pos;
+  uint64_t n_reads;
+  FILE *input_file;
+  bool popened;
+  int decomp_idx;
+  string out_path;
+  string err_path;
+  Result(int channel, const char *in_path, const char *o_name)
+      : channel(channel), in_path(in_path), n_input_chunks(0), n_processed_chunks(0), finished_reading(false),
+        done_with_output(false), o_name(o_name), p_kmer_matches(new vector<uint64_t>()), chars_read(0), error(false),
+        output_error(false), missing_decompressor(false), error_pos(1ULL << 48), io_error(false), n_reads(0), input_file(NULL),
+        popened(false) {
+    decomp_idx = decompressor(in_path);
+    const char *compext = "";
+    if (decomp_idx != -1) {
+      // compress output with same compressor as input
+      compext = compressors[decomp_idx][0];
+    }
+    out_path = o_name ? string(o_name) + "." + to_string(channel) + ".tsv" + compext : "/dev/stdout";
+    err_path = o_name ? string(o_name) + "." + to_string(channel) + ".err" : "/dev/stderr";
+    remove_output();
+    recreate_error();
+  }
+  ~Result() {
+    if (p_kmer_matches) {
+      delete p_kmer_matches;
+      p_kmer_matches = NULL;
+    }
+    close_input();
+  }
+  void open_input() {
+    assert(errno == 0);
+    if (decomp_idx == -1) { // no decomprefssion required
+      popened = false;
+      input_file = fopen(in_path.c_str(), "r");
+    } else {
+      popened = true;
+      auto &decomp = compressors[decomp_idx];
+      if (0 == strcmp(decomp[2], "tested_and_does_not_work")) {
+        cerr << chrono_time() << ":  "
+             << "[ERROR] Required decompressor " << decomp[1] << " is unavailable: " << in_path << endl;
+        missing_decompressor = true;
+        note_io_error();
+      } else {
+        assert(0 == strcmp(decomp[2], "tested_and_works"));
+        input_file = popen_decompressor(decomp[1], in_path.c_str());
+      }
+    }
+    if (errno || input_file == NULL || ferror(input_file)) {
+      note_io_error();
+    }
+  }
+  void close_input() {
+    errno = 0;
+    if (input_file) {
+      if (popened) {
+        pclose(input_file);
+      } else {
+        fclose(input_file);
+      }
+      input_file = NULL;
+      if (errno) {
+        note_io_error();
+      }
+    }
+    finished_reading = true;
+  }
+  void note_io_error(bool quiet = false) {
+    error_pos = min(error_pos, chars_read);
+    if (!(error) && !(quiet)) {
+      cerr << chrono_time() << ":  "
+           << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+    }
+    io_error = true;
+    error = true;
+    if (errno) {
+      perror(in_path.c_str());
+      errno = 0;
+    }
+  }
+  void data_format_error(uint64_t pos = 1ULL << 48) {
+    error_pos = min(error_pos, min(pos, chars_read));
+    error = true;
+  }
+  void write_error_info() {
+    assert(error || output_error);
+    ofstream fh(err_path, ofstream::out | ofstream::binary);
+    if (output_error) {
+      fh << "[ERROR] Failed to write to output file." << endl;
+    } else if (missing_decompressor) {
+      fh << "[ERROR] Decompressor " << compressors[decomp_idx][1] << " is unavailable for input " << in_path << endl;
+    } else if (io_error) {
+      // I/O errors are reported on stderr in realtime.  Note them in the .err file.
+      fh << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+    } else {
+      fh << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+      cerr << chrono_time() << ":  "
+           << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+    }
+    fh.close();
+    delete p_kmer_matches;
+    p_kmer_matches = NULL;
+    remove_output();
+  }
+  void remove_file(const string &path, const string placeholder_text = "") {
+    if (0 == strncmp(path.c_str(), "/dev/", 5)) { // do not delete /dev/std{out, err}, /dev/null, etc.
+      return;
+    }
+    string rm_cmd = string("/bin/rm -f '" + path + "'");
+    errno = 0;
+    const auto rm_exit = system(rm_cmd.c_str()); // if this fails, well, such is life
+    if (errno || rm_exit) {
+      perror(rm_cmd.c_str());
+      errno = 0;
+      cerr << "[ERROR]:  Failed to remove pre-existing file " << path << ";  will not process input " << in_path << endl;
+      note_io_error(true); // quiet
+    }
+    if (!(placeholder_text.empty())) {
+      ofstream fh(err_path, ofstream::out | ofstream::binary);
+      fh << placeholder_text;
+      fh.close();
+    }
+  }
+  void remove_output() { remove_file(out_path); }
+  void remove_error() { remove_file(err_path); }
+  void recreate_error() {
+    remove_file(
+        err_path,
+        "This placeholder .err file will be removed when execution succeeds for input " + in_path +
+            ". If it's still hanging around after the program is done, with this uninformative error message, then the program "
+            "must have been aborted in the middle of a computation, without a chance to record a more helpful error message.  "
+            "If that's the case, don't trust any result files that may have been produced for this input.");
+  }
+  void write_output() {
+    cerr << chrono_time() << ":  "
+         << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
+    if (error) {
+      write_error_info();
+      return;
+    }
+    FILE *out_file;
+    auto check_output_error = [&](int code_line) -> bool {
+      if (out_file == NULL || ferror(out_file)) {
+        cerr << chrono_time() << ":  "
+             << "[ERROR] Error writing output " << out_path << " cl " << code_line << endl;
+        if (errno) {
+          perror(out_path.c_str());
+          errno = 0;
+        }
+        output_error = true;
+        write_error_info();
+        return true;
+      }
+      return false;
+    };
+    if (decomp_idx != -1) {
+      out_file = popen_compressor(compressors[decomp_idx][1], out_path.c_str());
+    } else {
+      out_file = fopen(out_path.c_str(), "w");
+    }
+    if (check_output_error(__LINE__)) {
+      return;
+    }
+    if (p_kmer_matches->size() == 0) {
+      cerr << chrono_time() << ":  "
+           << "[WARNING] found zero hits for the " << n_reads << " reads input from " << in_path << endl;
+    } else {
+      // For each kmer output how many times it occurs in kmer_matches.
+      sort(p_kmer_matches->begin(), p_kmer_matches->end());
+      const uint64_t end = p_kmer_matches->size();
+      uint64_t i = 0;
+      uint64_t n_snps = 0;
+      uint64_t n_hits = 0;
+      while (i != end) {
+        uint64_t j = i + 1;
+        while (j != end && (*p_kmer_matches)[i] == (*p_kmer_matches)[j]) {
+          ++j;
+        }
+        ++n_snps;
+        n_hits += (j - i);
+        fprintf(out_file, "%lu\t%lu\n", (*p_kmer_matches)[i], (j - i));
+        if (check_output_error(__LINE__)) {
+          return;
+        }
+        i = j;
+      }
+      cerr << chrono_time() << ":  "
+           << "[Stats] " << n_snps << " snps, " << n_reads << " reads, " << int((((double)n_hits) / n_snps) * 100) / 100.0
+           << " hits/snp, for " << in_path << endl;
+    }
+    if (decomp_idx == -1) {
+      fclose(out_file);
+    } else {
+      pclose(out_file);
+    }
+    if (check_output_error(__LINE__)) {
+      return;
+    }
+    delete p_kmer_matches;
+    p_kmer_matches = NULL;
+    remove_error();
+  }
+  bool pending_output() {
+    if (done_with_output || !(finished_reading)) {
+      return false;
+    }
+    {
+      unique_lock<mutex> lk(mtx);
+      return n_input_chunks == n_processed_chunks;
+    }
+  }
+  void merge_kmer_matches(vector<uint64_t> &kmt, const int64_t n_reads_chunk) {
+    unique_lock<mutex> lk(mtx);
+    p_kmer_matches->insert(p_kmer_matches->end(), kmt.begin(), kmt.end());
+    ++n_processed_chunks;
+    if (n_reads_chunk >= 0) {
+      n_reads += n_reads_chunk;
+    }
+  }
+
+private:
+  mutex mtx;
+};
+
 bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, int n_inputs,
                  const char *const *input_paths, char *o_name, const int M2, const int M3, const int n_threads) {
 
@@ -484,480 +881,212 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     o_name = NULL;
   }
 
-  // In this design we have a single reader doing all the I/O (this function),
-  // and up to n parallel query threads.  The reader grabs buffer space
-  // for the next chunk of input, reads from the input file, launches a
-  // thread to execute queries for the chunk, and repeats.  The reader may
-  // block for three reasons:
-  //
-  //   *  I/O, waiting for bytes to be read
-  //
-  //   *  when the maximum number of threads are running, waiting for a
-  //      thread to complete before a new thread can be launched
-  //
-  //   *  when all buffers are full, waiting for a thread to
-  //      complete before more bytes can be read
-  //
-  // The reader may read-ahead some number of chunks.  That is, it will keep
-  // reading even if it cannot immediately dispatch query threads, up until
-  // the allocated buffer capacity is fully utilized.  This may help better
-  // overlap I/O and computation in some cases.
-
-  // Allocate space for this many input chunks.
-  const int n_chunks = max(n_threads + 1, int(n_threads * read_ahead_ratio));
-  vector<char> buffer(segment_size * n_chunks);
-  char *buffer_addr = buffer.data();
-
-  // This window within the buffer is ready to receive the first input chunk.
-  int chunk_idx = 0;
-  char *window = buffer_addr + chunk_idx * segment_size;
-
-  // A chunk is running if and only if some query thread owns it.
-  vector<bool> running;
-  // Often actual_size would be smaller than segment_size, because a chunk contains
-  // whole reads (any leftover bytes are carried through to the start of the next chunk).
-  vector<int> actual_size;
-  vector<int> chunk_channel;
-  vector<int64_t> offset_in_file;
-  for (int i = 0; i < n_chunks; ++i) {
-    running.push_back(false);
-    actual_size.push_back(0);
-    offset_in_file.push_back(-1);
-    chunk_channel.push_back(-1);
-  }
-
-  struct Result {
-    int channel;
-    const char *in_path;
-    const char *o_name;
-    int n_input_chunks, n_processed_chunks;
-    bool finished_reading;
-    bool done_with_output;
-    vector<uint64_t> *p_kmer_matches;
-    uint64_t chars_read;
-    bool error;
-    bool io_error;
-    uint64_t error_pos;
-    uint64_t n_reads;
-    FILE *input_file;
-    bool popened;
-    int decomp_idx;
-    string out_path;
-    Result(int channel, const char *in_path, const char *o_name)
-        : channel(channel), in_path(in_path), n_input_chunks(0), n_processed_chunks(0), finished_reading(false),
-          done_with_output(false), o_name(o_name), p_kmer_matches(new vector<uint64_t>()), chars_read(0), error(false),
-          error_pos(1ULL << 48), io_error(false), n_reads(0), input_file(NULL), popened(false) {
-      decomp_idx = decompressor(in_path);
-      const char *compext = "";
-      if (decomp_idx != -1) {
-        // compress output with same compressor as input
-        compext = compressors[decomp_idx][0];
-      }
-      out_path = o_name ? string(o_name) + "." + to_string(channel) + ".tsv" + compext : "/dev/stdout";
-      remove_output();
-    }
-    ~Result() {
-      if (p_kmer_matches) {
-        delete p_kmer_matches;
-        p_kmer_matches = NULL;
-      }
-      close_input();
-    }
-    void open_input() {
-      assert(errno == 0);
-      if (decomp_idx == -1) { // no decomprefssion required
-        popened = false;
-        input_file = fopen(in_path, "r");
-      } else {
-        popened = true;
-        auto &decomp = compressors[decomp_idx];
-        if (0 == strcmp(decomp[2], "tested_and_does_not_work")) {
-          cerr << "ERROR:  Required decompressor " << decomp[1] << " is unavailable: " << in_path << endl;
-          note_io_error();
-        } else {
-          assert(0 == strcmp(decomp[2], "tested_and_works"));
-          input_file = popen_decompressor(decomp[1], in_path);
-        }
-      }
-      if (errno || input_file == NULL || ferror(input_file)) {
-        note_io_error();
-      }
-    }
-    void close_input() {
-      errno = 0;
-      finished_reading = true;
-      if (input_file) {
-        if (popened) {
-          pclose(input_file);
-        } else {
-          fclose(input_file);
-        }
-        input_file = NULL;
-        if (errno) {
-          note_io_error();
-        }
-      }
-    }
-    void note_io_error(bool quiet = false) {
-      error_pos = min(error_pos, chars_read);
-      if (!(error) && !(quiet)) {
-        cerr << chrono_time() << ":  "
-             << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
-      }
-      io_error = true;
-      error = true;
-      if (errno) {
-        perror(in_path);
-        errno = 0;
-      }
-    }
-    void data_format_error(uint64_t pos = 1ULL << 48) {
-      error_pos = min(error_pos, min(pos, chars_read));
-      error = true;
-    }
-    void write_error_info(bool output_error = false) {
-      assert(error || output_error);
-      auto err_path = o_name ? string(o_name) + "." + to_string(channel) + ".err" : "/dev/null";
-      ofstream fh(err_path, ofstream::out | ofstream::binary);
-      if (output_error) {
-        fh << "[ERROR] Failed to write to output file." << endl;
-      } else if (io_error) {
-        // I/O errors are reported on stderr in realtime.  Note them in the .err file.
-        fh << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
-      } else {
-        fh << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
-        cerr << chrono_time() << ":  "
-             << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path
-             << endl;
-      }
-      fh.close();
-      delete p_kmer_matches;
-      p_kmer_matches = NULL;
-      remove_output();
-    }
-    void remove_output() {
-      string rm_cmd = string("/bin/rm -f '" + out_path + "'");
-      errno = 0;
-      const auto rm_exit = system(rm_cmd.c_str()); // if this fails, well, such is life
-      if (errno || rm_exit) {
-        perror(rm_cmd.c_str());
-        errno = 0;
-        cerr << "[ERROR]:  Failed to remove pre-existing file " << out_path << ";  will not process input " << in_path << endl;
-        note_io_error(true); // quiet
-      }
-    }
-    void write_output() {
-      cerr << chrono_time() << ":  "
-           << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
-      if (error) {
-        write_error_info();
-        return;
-      }
-      FILE *out_file;
-      auto output_error = [&]() -> bool {
-        if (out_file == NULL || ferror(out_file)) {
-          cerr << chrono_time() << ":  "
-               << "[ERROR] Error writing output " << out_path << endl;
-          if (errno) {
-            perror(out_path.c_str());
-            errno = 0;
-          }
-          write_error_info(true);
-          return true;
-        }
-        return false;
-      };
-      if (decomp_idx != -1) {
-        out_file = popen_compressor(compressors[decomp_idx][1], out_path.c_str());
-      } else {
-        out_file = fopen(out_path.c_str(), "w");
-      }
-      if (output_error()) {
-        return;
-      }
-      if (p_kmer_matches->size() == 0) {
-        cerr << chrono_time() << ":  "
-             << "[WARNING] found zero hits for the " << n_reads << " reads input from " << in_path << endl;
-      } else {
-        // For each kmer output how many times it occurs in kmer_matches.
-        sort(p_kmer_matches->begin(), p_kmer_matches->end());
-        const uint64_t end = p_kmer_matches->size();
-        uint64_t i = 0;
-        uint64_t n_snps = 0;
-        uint64_t n_hits = 0;
-        while (i != end) {
-          uint64_t j = i + 1;
-          while (j != end && (*p_kmer_matches)[i] == (*p_kmer_matches)[j]) {
-            ++j;
-          }
-          ++n_snps;
-          n_hits += (j - i);
-          fprintf(out_file, "%lu\t%lu\n", (*p_kmer_matches)[i], (j - i));
-          if (output_error()) {
-            return;
-          }
-          i = j;
-        }
-        cerr << chrono_time() << ":  "
-             << "[Stats] " << n_snps << " snps, " << n_reads << " reads, " << int((((double)n_hits) / n_snps) * 100) / 100.0
-             << " hits/snp, for " << in_path << endl;
-      }
-      if (decomp_idx == -1) {
-        fclose(out_file);
-      } else {
-        pclose(out_file);
-      }
-      if (output_error()) {
-        return;
-      }
-      delete p_kmer_matches;
-      p_kmer_matches = NULL;
-    }
-    bool pending_output() {
-      if (done_with_output || !(finished_reading)) {
-        return false;
-      }
-      {
-        unique_lock<mutex> lk(mtx);
-        return n_input_chunks == n_processed_chunks;
-      }
-    }
-    void merge_kmer_matches(vector<uint64_t> &kmt, const int64_t n_reads_chunk) {
-      unique_lock<mutex> lk(mtx);
-      p_kmer_matches->insert(p_kmer_matches->end(), kmt.begin(), kmt.end());
-      ++n_processed_chunks;
-      if (n_reads_chunk >= 0) {
-        n_reads += n_reads_chunk;
-      }
-    }
-
-  private:
-    mutex mtx;
-  };
+  uint64_t total_reads = 0;
 
   vector<Result *> results;
   for (int i = 0; i < n_inputs; ++i) {
+    // This deletes any pre-existing output file and emits out.i.err if
+    // the required decompressor for input_paths[i] is not installed.
     results.push_back(new Result(i, input_paths[i], o_name));
   }
+
+  SegmentContext sc(n_threads);
+
+  using QueryTask = tuple<int, int, uint64_t, uint64_t>;
+  queue<QueryTask> query_tasks;
+  mutex queue_mtx;
+  condition_variable queue_cv;
+  int running_threads = 0;
+  bool all_inputs_scanned = false;
+
+  auto enqueue_query_task = [&](QueryTask qt) {
+    unique_lock<mutex> lk(queue_mtx);
+    query_tasks.push(qt);
+    if (query_tasks.size() == 1) {
+      lk.unlock();
+      queue_cv.notify_one();
+    }
+  };
+
+  auto query_task_func = [&](QueryTask qt) {
+    int channel;
+    int segment_idx;
+    uint64_t segment_size;
+    uint64_t offset_in_file;
+    tie(channel, segment_idx, segment_size, offset_in_file) = qt;
+    int64_t n_reads;
+    {
+      vector<uint64_t> kmt;
+      n_reads = kmer_lookup_chunk(&kmt, lmer_index, mmer_bloom, kmers_index, snps, sc.buffer_addr + SEGMENT_SIZE * segment_idx,
+                                  segment_size, M2, M3, results[channel]->in_path, s_start);
+      sc.release_segment(segment_idx, 1);
+      if (n_reads < 0) {
+        // if negative, n_reads isn't actually a count of reads;  it's a count of chars before the error
+        results[channel]->data_format_error(offset_in_file - n_reads);
+      }
+      results[channel]->merge_kmer_matches(kmt, n_reads);
+    }
+    {
+      unique_lock<mutex> lk(queue_mtx);
+      --running_threads;
+      if (n_reads >= 0) {
+        total_reads += n_reads;
+      }
+      if (running_threads == 0 || running_threads == n_threads - 1) {
+        lk.unlock();
+        queue_cv.notify_one();
+      }
+    }
+  };
+
+  // this function will output result for an input file
+  auto write_output_func = [&](const int result_idx) {
+    auto &r = *results[result_idx];
+    r.write_output();
+    {
+      unique_lock<mutex> lk(queue_mtx);
+      --running_threads;
+      if (running_threads == 0 || running_threads == n_threads - 1) {
+        lk.unlock();
+        queue_cv.notify_one();
+      }
+    }
+  };
 
   int first_result_idx_not_done_with_output = 0;
   int last_result_idx_done_with_input = -1;
 
-  uint64_t total_reads = 0;
-
-  // bytes_leftover is the number of bytes following the last complete read that is fully contained in the chunk window
-  // these bytes are copied over to the next chunk window
-  uint64_t bytes_leftover = 0;
-
-  // this mutex protects "n_running_threads, "actual_size", and "running"
-  mutex mtx;
-  condition_variable cv;
-  int n_running_threads = 0;
-
-  int channel = 0;
-  results[channel]->open_input();
-
-  //  Print progress update every 1 million reads.
   constexpr uint64_t PROGRESS_UPDATE_INTERVAL = 1000 * 1000;
   uint64_t total_reads_last_update = 0;
 
-  while (channel < n_inputs) {
-
-    // the initial bytes_left_over in window represent still unprocessed input from the same file;
-    // now read more bytes up to the end of the window
-    ssize_t bytes_read;
-    if (!(results[channel]->error)) {
-      bytes_read = fread(window + bytes_leftover, 1, segment_size - bytes_leftover, results[channel]->input_file);
-      if (ferror(results[channel]->input_file)) {
-        results[channel]->note_io_error();
-      }
-    }
-
-    if (results[channel]->error) {
-      // wrap up this input path because of the error
-      bytes_read = 0;
-      bytes_leftover = 0;
-    }
-
-    const auto bytes_in_window = bytes_leftover + bytes_read;
-    if (bytes_in_window == 0) {
-      // Done with this input path
-      results[channel]->close_input();
-      if (channel > last_result_idx_done_with_input) {
-        last_result_idx_done_with_input = channel;
-      }
-      ++channel;
-      if (channel < n_inputs) {
-        // Read chunk from next input path
-        results[channel]->open_input();
-        continue;
-      }
-    } else {
-      results[channel]->n_input_chunks++;
-      chunk_channel[chunk_idx] = channel;
-    }
-
-    assert(channel < n_inputs || bytes_in_window == 0);
-    assert(channel < n_inputs || bytes_read == 0);
-
-    if (bytes_in_window > 0 && window[0] != '@') {
-      results[channel]->data_format_error();
-      continue;
-    }
-
-    if (bytes_read) {
-      results[channel]->chars_read += bytes_read;
-    }
-
-    char *last_read_addr = last_read(window, bytes_in_window);
-    if (bytes_in_window > 0 && last_read_addr == NULL) {
-      // TODO: Count lines here to report a more useful error message.
-      results[channel]->data_format_error();
-      continue;
-    }
-
-    const auto bytes_until_last_read = last_read_addr - window;
-    const auto bytes_in_chunk = (bytes_in_window < segment_size) ? bytes_in_window : bytes_until_last_read;
-    actual_size[chunk_idx] = bytes_in_chunk;
-    if (bytes_in_window) {
-      // the offset in file only matters if there are bytes in the chunk (otherwise the chunk won't be launched on a thread)
-      offset_in_file[chunk_idx] = results[channel]->chars_read - bytes_in_window;
-    }
-    bytes_leftover = bytes_in_window - bytes_in_chunk;
-    const auto leftover_addr = window + bytes_in_chunk;
-
-    // this function will output result for an input file
-    auto write_output_func = [&](const int result_idx) {
-      auto &r = *results[result_idx];
-      r.write_output();
-      {
-        unique_lock<mutex> lk(mtx); // this acquires the mutex mtx
-        --n_running_threads;
-        lk.unlock(); // this explicit unlock is a perf optimization of some sort, see "condition_variable" docs for C++11
-        cv.notify_one();
-      }
-    };
-
-    // this function will run in each query thread
-    auto run_queries = [&](int my_chunk_idx) {
-      int64_t n_reads;
-      {
-        vector<uint64_t> kmt;
-        n_reads = kmer_lookup_chunk(&kmt, lmer_index, mmer_bloom, kmers_index, snps, buffer_addr + segment_size * my_chunk_idx,
-                                    actual_size[my_chunk_idx], M2, M3, results[chunk_channel[my_chunk_idx]]->in_path, s_start);
-        if (n_reads < 0) {
-          // if negative, n_reads isn't actually a count of reads;  it's a count of chars before the error
-          results[chunk_channel[my_chunk_idx]]->data_format_error(offset_in_file[my_chunk_idx] - n_reads);
-        }
-        results[chunk_channel[my_chunk_idx]]->merge_kmer_matches(kmt, n_reads);
-      }
-      {
-        unique_lock<mutex> lk(mtx); // this acquires the mutex mtx
-        --n_running_threads;
-        actual_size[my_chunk_idx] = 0;
-        offset_in_file[my_chunk_idx] = -1;
-        running[my_chunk_idx] = false;
-        chunk_channel[my_chunk_idx] = -1;
-        if (n_reads >= 0) {
-          total_reads += n_reads;
-        }
-        lk.unlock(); // this explicit unlock is a perf optimization of some sort, see "condition_variable" docs for C++11
-        cv.notify_one();
-      }
-    };
-
-    // wait for thread slot or chunk slot to free up
-    int ready_to_fill_chunk_idx = -1;
-    bool some_work_remains = true;
-    while (some_work_remains && ready_to_fill_chunk_idx == -1) {
-      unique_lock<mutex> lk(mtx);
-      int ready_to_run_chunk_idx = -1;
-      int pending_output_result_idx = -1;
-      cv.wait(lk, [&] {
+  auto task_dispatch_loop = [&]() {
+    bool all_done = false;
+    do {
+      unique_lock<mutex> lk(queue_mtx);
+      queue_cv.wait(lk, [&] {
         // Progress update.
         if ((total_reads - total_reads_last_update) >= PROGRESS_UPDATE_INTERVAL) {
           cerr << chrono_time() << ":  " << (total_reads / 10000) / 100.0 << " million reads were scanned after "
                << (chrono_time() - s_start) / 1000 << " seconds" << endl;
           total_reads_last_update = total_reads;
         }
-        // Can we emit output for some input path all of whose chunks have been processed?
-        if (n_running_threads < n_threads) {
+        // Can we kick off any output writer threads?
+        while (running_threads < n_threads) {
+          int pending_output_result_idx = -1;
           for (int i = first_result_idx_not_done_with_output; i <= last_result_idx_done_with_input; ++i) {
             if (results[i]->pending_output()) {
               pending_output_result_idx = i;
-              return true;
+              break;
             }
           }
-        }
-        // Can we launch a thread for some chunk that's ready and waiting?
-        if (n_running_threads < n_threads) {
-          for (int i = 0; i < n_chunks; ++i) {
-            if (!running[i] && actual_size[i] != 0) {
-              ready_to_run_chunk_idx = i;
-              return true;
-            }
+          if (pending_output_result_idx == -1) {
+            break;
+          }
+          ++running_threads;
+          auto &r = *results[pending_output_result_idx];
+          r.done_with_output = true;
+          thread(write_output_func, pending_output_result_idx).detach();
+          while (first_result_idx_not_done_with_output < n_inputs &&
+                 results[first_result_idx_not_done_with_output]->done_with_output) {
+            first_result_idx_not_done_with_output += 1;
           }
         }
-        // Are we totally done?  This means no more input, no more chunks to launch, and no more active threads.
-        if (channel == n_inputs && n_running_threads == 0) {
-          // Here 0 == n_running_threads < n_threads, so the loop above didn't find a ready_to_run_chunk_idx.
-          some_work_remains = false;
-          return true;
+        // Can we kick off any query threads?
+        while (running_threads < n_threads && !(query_tasks.empty())) {
+          ++running_threads;
+          auto task = query_tasks.front();
+          // cerr << "Dispatching query task for " << get<0>(task) << " " << get<1>(task) << " " << get<2>(task) << " " <<
+          // get<3>(task) << endl;
+          thread(query_task_func, task).detach();
+          query_tasks.pop();
         }
-        // If we got here, we can't launch a new query thread.  Can we at least fill a new chunk window with input?
-        if (channel < n_inputs) {
-          for (int i = 0; i < n_chunks; ++i) {
-            if (actual_size[i] == 0) {
-              ready_to_fill_chunk_idx = i;
-              return true;
-            }
-          }
-        }
-        // There is nothing we can do but wait (for some threads to finish).
-        return false;
+        all_done = (running_threads == 0) && query_tasks.empty() && all_inputs_scanned &&
+                   (first_result_idx_not_done_with_output == n_inputs);
+        // cerr << running_threads << " " << query_tasks.size() << " " << all_inputs_scanned << " " <<
+        // first_result_idx_not_done_with_output << endl;
+        return all_done;
       });
-      if (ready_to_run_chunk_idx != -1) {
-        n_running_threads += 1;
-        assert(actual_size[ready_to_run_chunk_idx] != 0);
-        assert(!running[ready_to_run_chunk_idx]);
-        running[ready_to_run_chunk_idx] = true;
-        thread(run_queries, ready_to_run_chunk_idx).detach();
-      } else if (pending_output_result_idx != -1) {
-        n_running_threads += 1;
-        auto &r = *results[pending_output_result_idx];
-        r.done_with_output = true;
-        thread(write_output_func, pending_output_result_idx).detach();
-        while (first_result_idx_not_done_with_output < channel &&
-               results[first_result_idx_not_done_with_output]->done_with_output) {
-          first_result_idx_not_done_with_output += 1;
-        }
-      }
-    }
+    } while (!(all_done));
+  };
 
-    if (channel == n_inputs) {
-      assert(!(some_work_remains));
-      assert(n_running_threads == 0);
-      assert(ready_to_fill_chunk_idx == -1);
-    } else {
-      assert(some_work_remains);
-      assert(ready_to_fill_chunk_idx != -1);
-      assert(actual_size[ready_to_fill_chunk_idx] == 0);
-      assert(!running[ready_to_fill_chunk_idx]);
-      // move any unprocessed bytes from the old chunk window to the new chunk window
-      window = buffer_addr + ready_to_fill_chunk_idx * segment_size;
-      if (bytes_leftover) {
-        memmove(window, leftover_addr, bytes_leftover);
-      }
-      chunk_idx = ready_to_fill_chunk_idx;
+  ReadersContext rc;
+
+  auto scan_input = [&](const int channel) {
+    ReadersContextRelease rcr(rc);
+    Segment segment(sc);
+    auto r = results[channel];
+    if (r->error) {
+      return;
     }
-  }
+    uint64_t offset_in_file = 0;
+    r->open_input();
+    while (!(r->error)) {
+      segment.advance(r->input_file, channel);
+      if (ferror(r->input_file)) {
+        r->note_io_error();
+        break;
+      }
+      if (segment.size == 0) {
+        break;
+      }
+      if (segment.size == SEGMENT_SIZE) {
+        // If we've filled the segment's entire buffer, it's likely that the segment
+        // ends in the middle of a fastq read.  Reverse to the start of that read.
+        segment.end_addr = last_read(segment.start_addr, segment.size);
+        if (segment.end_addr == NULL || segment.end_addr[0] != '@') {
+          r->data_format_error();
+          break;
+        }
+        // Re-establish segment data invariant
+        segment.bytes_leftover = segment.size - (segment.end_addr - segment.start_addr);
+        segment.assert_invariant();
+      }
+      // transfer 1 reservation to the task, to be released when the task completes
+      --segment.tokens;
+      r->n_input_chunks++;
+      enqueue_query_task(QueryTask(channel, segment.idx, segment.end_addr - segment.start_addr, offset_in_file));
+      offset_in_file +=
+          segment.end_addr - segment.start_addr; // only used for error reporting: number of bytes preceding segment
+    }
+    r->close_input();
+    {
+      unique_lock<mutex> lk(queue_mtx);
+      if (channel > last_result_idx_done_with_input) {
+        last_result_idx_done_with_input = channel;
+      }
+      lk.unlock();
+      queue_cv.notify_one();
+    }
+  };
+
+  auto input_scan_loop = [&]() {
+    // Dispatch scanner threads for all inputs in order
+    // Pause when necessary to fit under MAX_PARALLEL_READERS threads
+    for (int channel = 0; channel < n_inputs; ++channel) {
+      rc.acquire_reader();
+      thread(scan_input, channel).detach();
+    }
+    // Wait for all reader threads to complete.
+    cerr << "[INFO] Waiting for all readers to quiesce" << endl;
+    rc.acquire_all();
+    {
+      unique_lock<mutex> lk(queue_mtx);
+      all_inputs_scanned = true;
+      lk.unlock();
+      queue_cv.notify_one();
+    }
+  };
+
+  thread(input_scan_loop).detach();
+  task_dispatch_loop();
+
   cerr << chrono_time() << ":  " << (total_reads / 10000) / 100.0 << " million reads were scanned after "
        << (chrono_time() - s_start) / 1000 << " seconds" << endl;
   int files_with_errors = 0;
   int files_without_errors = 0;
   uint64_t reads_covered = 0;
   for (int i = 0; i < n_inputs; ++i) {
-    if (results[i]->error) {
+    if (results[i]->error || results[i]->output_error) {
       ++files_with_errors;
     } else {
       ++files_without_errors;
@@ -971,8 +1100,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
          << endl;
   }
   if (files_with_errors) {
-    cerr << "Failed to process correctly " << (files_without_errors == 0 ? "all " : "") << files_with_errors << " input files."
-         << endl;
+    cerr << "*** Failed for " << (files_without_errors == 0 ? "ALL " : "") << files_with_errors << " input files. ***" << endl;
   }
   return (files_with_errors > 0);
 }
