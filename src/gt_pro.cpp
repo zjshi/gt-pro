@@ -47,7 +47,7 @@
 
 using namespace std;
 
-// each 12 MB chunk will run in its own thread
+// each 8 MB chunk will run in its own thread
 // 12 MB fastq ~ 26,000 reads ~ 0.5 cpu seconds
 constexpr auto segment_size = 12 * 1024 * 1024;
 
@@ -120,17 +120,20 @@ struct CodeDict {
 const CodeDict code_dict;
 
 // see the comment "note on the binary representation of nucleotide sequences" below.
-template <class int_type, int len> void seq_encode(int_type *result, const char *buf) {
+template <class int_type, int len> bool seq_encode(int_type *result, const char *buf) {
   result[0] = 0; // forward
   result[1] = 0; // rc
   // This loop may be unrolled by the compiler because len is a compile-time constant.
   for (int_type bitpos = 0; bitpos < BITS_PER_BASE * len; bitpos += BITS_PER_BASE) {
     const uint8_t b_code = code_dict.data[*buf++];
-    // assert((b_code & 0xfc) == 0);
+    if (b_code & 0xfc) {
+      return true;
+    }
     result[0] |= (((int_type)b_code) << bitpos);
     result[1] <<= BITS_PER_BASE;
     result[1] |= (b_code ^ 3);
   }
+  return false; // success
 }
 
 uint64_t reverse_complement(uint64_t dna) {
@@ -151,10 +154,9 @@ long chrono_time() {
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-uint64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *const lmer_index, const uint64_t *const mmer_bloom,
-                           const uint32_t *const kmers_index, const uint64_t *const snps, const char *const window,
-                           const int bytes_in_chunk, const int M2, const int M3, const char *const in_path,
-                           const long s_start) {
+int64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *const lmer_index, const uint64_t *const mmer_bloom,
+                          const uint32_t *const kmers_index, const uint64_t *const snps, const char *const window,
+                          const int bytes_in_chunk, const int M2, const int M3, const char *const in_path, const long s_start) {
 
   const uint64_t MAX_BLOOM = (LSB << M3) - LSB;
 
@@ -173,14 +175,19 @@ uint64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *cons
   char seq_buf[MAX_TOKEN_LENGTH];
   unordered_map<uint64_t, int> footprint;
 
-  for (int i = 0; true; ++i) {
+  for (int i = 0; i < bytes_in_chunk; ++i) {
 
+    // c is the character preceding window[i]
     if (c == '\n') {
       ++n_lines;
-    }
-
-    if (i == bytes_in_chunk) {
-      break;
+      // The first character on the read header must be @
+      if (n_lines % 4 == 0 && window[i] != '@') {
+        return -i; // here i >= 1
+      }
+      // Similar rule from the fastq spec.
+      if (n_lines % 4 == 2 && window[i] != '+') {
+        return -i;
+      }
     }
 
     // Invariant:  The number of new line characters consumed before window[i]
@@ -219,7 +226,10 @@ uint64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *cons
 
         // This kmer_tuple encodes the forward and reverse kmers at seq_buf[j...]
         uint64_t kmer_tuple[2];
-        seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
+        const auto malformed_dna = seq_encode<uint64_t, K>(kmer_tuple, seq_buf + j);
+        if (malformed_dna) {
+          return -(i - token_length);
+        }
         const uint64_t kmer = min(kmer_tuple[0], kmer_tuple[1]);
 
         if ((mmer_bloom[(kmer & MAX_BLOOM) / 64] >> (kmer % 64)) & 1) {
@@ -265,9 +275,8 @@ uint64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *cons
   }
 
   if (token_length != 0) {
-    cerr << chrono_time() << ":  "
-         << "Error:  Truncated read sequence at end of file: " << in_path << endl;
-    exit(EXIT_FAILURE);
+    // Truncated read sequence at end of chunk.  Malformed FASTQ.
+    return -bytes_in_chunk;
   }
 
   return (n_lines + 3) / 4;
@@ -372,9 +381,11 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   // whole reads (any leftover bytes are carried through to the start of the next chunk).
   vector<int> actual_size;
   vector<int> chunk_channel;
+  vector<int64_t> offset_in_file;
   for (int i = 0; i < n_chunks; ++i) {
     running.push_back(false);
     actual_size.push_back(0);
+    offset_in_file.push_back(-1);
     chunk_channel.push_back(-1);
   }
 
@@ -386,38 +397,83 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     bool finished_reading;
     bool done_with_output;
     vector<uint64_t> *p_kmer_matches;
+    uint64_t chars_read;
+    bool error;
+    bool io_error;
+    uint64_t error_pos;
+    uint64_t n_reads;
     Result(int channel, const char *in_path, const char *o_name)
         : channel(channel), in_path(in_path), n_input_chunks(0), n_processed_chunks(0), finished_reading(false),
-          done_with_output(false), o_name(o_name), p_kmer_matches(new vector<uint64_t>()) {}
+          done_with_output(false), o_name(o_name), p_kmer_matches(new vector<uint64_t>()), chars_read(0), error(false),
+          error_pos(1ULL << 48), io_error(false), n_reads(0) {}
     ~Result() {
       if (p_kmer_matches) {
         delete p_kmer_matches;
         p_kmer_matches = NULL;
       }
     }
+    void note_io_error() {
+      error_pos = min(error_pos, chars_read);
+      if (!(error)) {
+        cerr << chrono_time() << ":  "
+             << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+      }
+      io_error = true;
+      error = true;
+    }
+    void data_format_error(uint64_t pos = 1ULL << 48) {
+      error_pos = min(error_pos, min(pos, chars_read));
+      error = true;
+    }
+    void write_error_info() {
+      assert(error);
+      auto err_path = string(o_name) + "." + to_string(channel) + ".err";
+      ofstream fh(err_path, ofstream::out | ofstream::binary);
+      if (io_error) {
+        // I/O errors are reported on stderr in realtime.  Note them in the .err file.
+        fh << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+      } else {
+        fh << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+        cerr << chrono_time() << ":  "
+             << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path
+             << endl;
+      }
+      fh.close();
+      delete p_kmer_matches;
+      p_kmer_matches = NULL;
+    }
     void write_output() {
+      if (error) {
+        write_error_info();
+        return;
+      }
       cerr << chrono_time() << ":  "
-           << "[Done] searching is completed, emitting results for " << in_path << endl;
+           << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
       auto out_path = string(o_name) + "." + to_string(channel) + ".tsv";
       ofstream fh(out_path, ofstream::out | ofstream::binary);
       if (p_kmer_matches->size() == 0) {
         cerr << chrono_time() << ":  "
-             << "zero hits for " << in_path << endl;
+             << "[WARNING] found zero hits for the " << n_reads << " reads input from " << in_path << endl;
       } else {
         // For each kmer output how many times it occurs in kmer_matches.
         sort(p_kmer_matches->begin(), p_kmer_matches->end());
         const uint64_t end = p_kmer_matches->size();
         uint64_t i = 0;
+        uint64_t n_snps = 0;
+        uint64_t n_hits = 0;
         while (i != end) {
           uint64_t j = i + 1;
           while (j != end && (*p_kmer_matches)[i] == (*p_kmer_matches)[j]) {
             ++j;
           }
+          ++n_snps;
+          n_hits += (j - i);
           fh << (*p_kmer_matches)[i] << '\t' << (j - i) << '\n';
           i = j;
         }
         cerr << chrono_time() << ":  "
-             << "Completed output for " << in_path << endl;
+             << "[Stats] " << n_snps << " snps, " << n_reads << " reads, " << int((((double)n_hits) / n_snps) * 100) / 100.0
+             << " hits/snp, for " << in_path << endl;
       }
       fh.close();
       delete p_kmer_matches;
@@ -432,10 +488,13 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
         return n_input_chunks == n_processed_chunks;
       }
     }
-    void merge_kmer_matches(vector<uint64_t> &kmt) {
+    void merge_kmer_matches(vector<uint64_t> &kmt, const int64_t n_reads_chunk) {
       unique_lock<mutex> lk(mtx);
       p_kmer_matches->insert(p_kmer_matches->end(), kmt.begin(), kmt.end());
       ++n_processed_chunks;
+      if (n_reads_chunk >= 0) {
+        n_reads += n_reads_chunk;
+      }
     }
 
   private:
@@ -479,11 +538,17 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 
     // the initial bytes_left_over in window represent still unprocessed input from the same file;
     // now read more bytes up to the end of the window
-    const ssize_t bytes_read = read(fd, window + bytes_leftover, segment_size - bytes_leftover);
+    ssize_t bytes_read;
+    if (channel < n_inputs && results[channel]->error) {
+      bytes_read = 0;
+      bytes_leftover = 0;
+    } else {
+      bytes_read = read(fd, window + bytes_leftover, segment_size - bytes_leftover);
+    }
     if (bytes_read == (ssize_t)-1) {
-      cerr << chrono_time() << ":  "
-           << "unknown fatal error when reading " << in_path << endl;
-      exit(EXIT_FAILURE);
+      assert(channel < n_inputs);
+      results[channel]->note_io_error();
+      continue;
     }
 
     const auto bytes_in_window = bytes_leftover + bytes_read;
@@ -508,27 +573,33 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     }
 
     if (bytes_in_window > 0 && window[0] != '@') {
-      // TODO: Perhaps count the lines here to report a more useful error message.
-      cerr << chrono_time() << ":  "
-           << "Error:  File does not conform to FASTQ specification at position " << total_chars << ": " << in_path << endl;
-      exit(EXIT_FAILURE);
+      results[channel]->data_format_error();
+      continue;
     }
 
     total_chars += bytes_read;
+    if (bytes_read) {
+      assert(channel < n_inputs);
+      results[channel]->chars_read += bytes_read;
+    }
 
     char *last_read_addr = last_read(window, bytes_in_window);
 
     if (bytes_in_window > 0 && last_read_addr == NULL) {
       // TODO: Count lines here to report a more useful error message.
-      cerr << chrono_time() << ":  "
-           << "Error:  File does not conform to FASTQ specification in the window between characters "
-           << (total_chars - bytes_read) + (last_read_addr - window) << " and " << total_chars << ": " << in_path << endl;
-      exit(EXIT_FAILURE);
+      assert(channel < n_inputs);
+      results[channel]->data_format_error();
+      continue;
     }
 
     const auto bytes_until_last_read = last_read_addr - window;
     const auto bytes_in_chunk = (bytes_in_window < segment_size) ? bytes_in_window : bytes_until_last_read;
     actual_size[chunk_idx] = bytes_in_chunk;
+    if (bytes_in_window) {
+      // the offset in file only matters if there are bytes in the chunk (otherwise the chunk won't be launched on a thread)
+      assert(channel < n_inputs);
+      offset_in_file[chunk_idx] = results[channel]->chars_read - bytes_in_window;
+    }
     bytes_leftover = bytes_in_window - bytes_in_chunk;
     const auto leftover_addr = window + bytes_in_chunk;
 
@@ -546,20 +617,26 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 
     // this function will run in each query thread
     auto run_queries = [&](int my_chunk_idx) {
-      uint64_t n_reads;
+      int64_t n_reads;
       {
         vector<uint64_t> kmt;
         n_reads = kmer_lookup_chunk(&kmt, lmer_index, mmer_bloom, kmers_index, snps, buffer_addr + segment_size * my_chunk_idx,
                                     actual_size[my_chunk_idx], M2, M3, in_path, s_start);
-        results[chunk_channel[my_chunk_idx]]->merge_kmer_matches(kmt);
+        if (n_reads < 0) {
+          results[chunk_channel[my_chunk_idx]]->data_format_error(offset_in_file[my_chunk_idx] - n_reads);
+        }
+        results[chunk_channel[my_chunk_idx]]->merge_kmer_matches(kmt, n_reads);
       }
       {
         unique_lock<mutex> lk(mtx); // this acquires the mutex mtx
         --n_running_threads;
         actual_size[my_chunk_idx] = 0;
+        offset_in_file[my_chunk_idx] = -1;
         running[my_chunk_idx] = false;
         chunk_channel[my_chunk_idx] = -1;
-        total_reads += n_reads;
+        if (n_reads >= 0) {
+          total_reads += n_reads;
+        }
         lk.unlock(); // this explicit unlock is a perf optimization of some sort, see "condition_variable" docs for C++11
         cv.notify_one();
       }
@@ -651,8 +728,26 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   }
   cerr << chrono_time() << ":  " << (total_reads / 10000) / 100.0 << " million reads were scanned after "
        << (chrono_time() - s_start) / 1000 << " seconds" << endl;
+  int files_with_errors = 0;
+  int files_without_errors = 0;
+  uint64_t reads_covered = 0;
   for (int i = 0; i < n_inputs; ++i) {
+    if (results[i]->error) {
+      ++files_with_errors;
+    } else {
+      ++files_without_errors;
+      reads_covered += results[i]->n_reads;
+    }
     delete results[i];
+  }
+  if (files_without_errors) {
+    cerr << chrono_time() << ":  "
+         << "Successfully processed " << files_without_errors << " input files containing " << reads_covered << " reads."
+         << endl;
+  }
+  if (files_with_errors) {
+    cerr << "Failed to process correctly " << (files_without_errors == 0 ? "all " : "") << files_with_errors << " input files."
+         << endl;
   }
 }
 
