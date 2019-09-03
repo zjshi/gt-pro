@@ -457,9 +457,7 @@ void multi_btc64(int n_path, const char **kpaths) {
     // Hacky parallel sort, funny c++ hasn't gotten around to making this standard.
     // Cuts the sort time in half, which is a considerable part of the program's overall runtime.
     using iterator = vector<KmerData>::iterator;
-    auto sorter = [](iterator start, iterator end) {
-      sort(start, end);
-    };
+    auto sorter = [](iterator start, iterator end) { sort(start, end); };
     auto merger = [](iterator start, iterator middle, iterator end) {
       // LOL, turns out this "inplace_merge" isn't actually in-place, so it allocs tons of RAM!
       // Should do something much better here --- like parallel quicksort with depth 2.

@@ -9,3 +9,7 @@ sckmerdb_build: src/sckmerdb_build.cpp Makefile
 
 clean:
 	rm ./sckmerdb_build ./gt_pro
+
+reformat:
+	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/sckmerdb_build.cpp > tmp-1.cpp && mv tmp-1.cpp src/sckmerdb_build.cpp
+	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/gt_pro.cpp > tmp-2.cpp && mv tmp-2.cpp src/gt_pro.cpp
