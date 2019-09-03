@@ -12,6 +12,7 @@
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 22)
 #define _MAP_POPULATE_empty
 #endif
+#define __STDC_FORMAT_MACROS
 #endif
 
 #ifdef _MAP_POPULATE_empty
@@ -22,6 +23,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <inttypes.h> // for PRId64
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -162,7 +164,7 @@ int decompressor(const char *inpath) {
     // comp[1] is the corresponding compressor program, e.g. "gzip"
     // comp[2] indicates if the decompressor is present and working on this system
     const auto clen = strlen(comp[0]);
-    if (pl > clen && 0 == strcmp(inpath + pl - clen, comp[0])) {
+    if (pl > clen && 0 == strcasecmp(inpath + pl - clen, comp[0])) {
       if (0 == strcmp(comp[2], "untested")) {
         comp[2] = test_compressor(comp[1]) ? "tested_and_works" : "tested_and_does_not_work";
       }
@@ -176,6 +178,20 @@ int decompressor(const char *inpath) {
     ++i;
   }
   return required;
+}
+
+string chopext(string path, int decomp_idx) {
+  // First chop off any compression extension.
+  if (decomp_idx != -1) {
+    auto &comp = compressors[decomp_idx];
+    path = path.substr(0, path.size() - strlen(comp[0]));
+  }
+  // Next chop off whatever other extension there is, probably .fq or .fastq
+  auto last_dot = path.find_last_of(".");
+  if (last_dot == string::npos) {
+    return path;
+  }
+  return path.substr(0, last_dot);
 }
 
 FILE *popen_compression_filter(const char *compressor, const char *path, const char *direction = "decompress") {
@@ -226,10 +242,18 @@ FILE *popen_decompressor(const char *compressor, const char *in_path) {
   return popen_compression_filter(compressor, in_path, "decompress");
 }
 
+bool file_exists(const char *filename) {
+  struct stat st;
+  auto status = stat(filename, &st);
+  errno = 0;
+  return (status != -1);
+}
+
 size_t get_fsize(const char *filename) {
   struct stat st;
   if (stat(filename, &st) == -1) {
     // Probably file not found.
+    errno = 0;
     return 0;
   }
   return st.st_size;
@@ -290,6 +314,18 @@ long chrono_time() {
 
 static bool ends_with(const std::string &str, const std::string &suffix) {
   return str.size() >= suffix.size() && 0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix);
+}
+
+// GNU memrchr isn't available on Mac OS X
+template <typename ElementType>
+const ElementType *find_last(const ElementType *first, const ElementType *last, const ElementType needle) {
+  while (first < last) {
+    --last;
+    if (*last == needle) {
+      return last;
+    }
+  }
+  return NULL;
 }
 
 int64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *const lmer_index, const uint64_t *const mmer_bloom,
@@ -420,7 +456,7 @@ int64_t kmer_lookup_chunk(vector<uint64_t> *kmer_matches, const LmerRange *const
   return (n_lines + 3) / 4;
 }
 
-char *last_read(const char *window, const int bytes_in_window) {
+const char *last_read(const char *window, const uint64_t bytes_in_window) {
   // Return a pointer to the initial '@' character of the last read header
   // within the given window.  Return NULL if no such read (for example,
   // if the file does not conform to FASTQ format).
@@ -442,22 +478,20 @@ char *last_read(const char *window, const int bytes_in_window) {
   // First find where in the window the last few lines begin.
   // Let line_start[3] point to the first character on the last line within the
   // window, line_start[2] same for the previous line, etc.  If fewer than 4 lines
-  // (malformed fastq), let all remaining line_start's point to window[0].
+  // (malformed fastq), let all remaining line_start's be NULL.
   // Then compute L such that line_start[L] points to the '@' character of the
   // last read header in the window.
 
-  // Below we use "bytes_in_window - 1" not just "bytes_in_window" because we
-  // are interested in the character that comes after the newline.
-
-  // we need bytes_in_window to be at least 2 for memrchr below
-  // no read is under 4 bytes in FASTQ
+  // no read is under 4 bytes in FASTQ;  checking early helps avoid corner cases below
   if (bytes_in_window <= 4) {
     return NULL;
   }
 
-  char *newline = (char *)memrchr(window, '\n', bytes_in_window - 1);
+  // Below we use "bytes_in_window - 1" not just "bytes_in_window" because we
+  // are interested in the character that comes after the newline.
+  const char *newline = find_last(window, window + bytes_in_window - 1, '\n');
   int L = -1;
-  char *line_start[4];
+  const char *line_start[4];
   for (int l = 3; l >= 0; --l) {
     if (newline == NULL) {
       line_start[l] = NULL;
@@ -467,7 +501,7 @@ char *last_read(const char *window, const int bytes_in_window) {
     if (L == -1 && *(line_start[l]) == '@') {
       L = l;
     }
-    newline = (char *)memrchr(window, '\n', newline - window);
+    newline = find_last(window, newline, '\n');
   }
   if (L >= 2) {
     if (line_start[L - 2] != NULL && *(line_start[L - 2]) != '+') {
@@ -493,7 +527,6 @@ struct ReadersContext {
     unique_lock<mutex> lk(mtx);
     bool acquired = false;
     do {
-      // cerr << "Readers " << readers << endl;
       cv.wait(lk, [&] {
         if (readers < MAX_PARALLEL_READERS) {
           ++readers;
@@ -519,6 +552,8 @@ struct ReadersContext {
   };
 };
 
+// Creating an "auto" instance of this class ensures a reader will
+// be released on block exit, even if the exit is early.
 struct ReadersContextRelease {
   ReadersContext &ctx;
   ReadersContextRelease(ReadersContext &rc) : ctx(rc) {}
@@ -587,7 +622,7 @@ struct Segment {
   int idx;
   int tokens;
   char *start_addr;
-  char *end_addr;
+  const char *end_addr;
   uint64_t size;
   uint64_t bytes_leftover;
   SegmentContext &ctx;
@@ -633,7 +668,7 @@ struct Segment {
 struct Result {
   int channel;
   const string in_path;
-  const char *o_name;
+  string o_name;
   int n_input_chunks, n_processed_chunks;
   bool finished_reading;
   bool done_with_output;
@@ -650,21 +685,79 @@ struct Result {
   int decomp_idx;
   string out_path;
   string err_path;
-  Result(int channel, const char *in_path, const char *o_name)
+  bool skip;
+  mutex *p_print_lock;
+  string full_inpath;
+  Result(int channel, const char *in_path, const char *oooname, const string &dbbase, const bool force, mutex *p_print_lock,
+         const string &c_prefix)
       : channel(channel), in_path(in_path), n_input_chunks(0), n_processed_chunks(0), finished_reading(false),
-        done_with_output(false), o_name(o_name), p_kmer_matches(new vector<uint64_t>()), chars_read(0), error(false),
-        output_error(false), missing_decompressor(false), error_pos(1ULL << 48), io_error(false), n_reads(0), input_file(NULL),
-        popened(false) {
+        done_with_output(false), o_name(oooname == NULL ? "" : oooname), p_kmer_matches(new vector<uint64_t>()), chars_read(0),
+        error(false), output_error(false), missing_decompressor(false), error_pos(1ULL << 48), io_error(false), n_reads(0),
+        input_file(NULL), popened(false), skip(false), p_print_lock(p_print_lock) {
     decomp_idx = decompressor(in_path);
     const char *compext = "";
     if (decomp_idx != -1) {
       // compress output with same compressor as input
       compext = compressors[decomp_idx][0];
     }
-    out_path = o_name ? string(o_name) + "." + to_string(channel) + ".tsv" + compext : "/dev/stdout";
-    err_path = o_name ? string(o_name) + "." + to_string(channel) + ".err" : "/dev/stderr";
-    remove_output();
-    recreate_error();
+    if (o_name.empty()) {
+      out_path = "/dev/stdout";
+      err_path = "/dev/stderr";
+    }
+    if (c_prefix.empty()) {
+      full_inpath = in_path;
+    } else if (in_path[0] == '/') {
+      cerr << chrono_time() << ": [WARNING] Ignoring specified -C prefix for non-relative input path: " << in_path << endl;
+      full_inpath = in_path;
+    } else {
+      full_inpath = c_prefix + "/" + in_path;
+    }
+    // Create a unique tag 'inbase' from the input path, to include in the
+    // output prefix where indicated by %{in}.  For instance, if the input
+    // path is /foo/bar123/r1.fastq.lz4, then inbase would be foo_bar123_r1.
+    // The -C prefix, if any, is intentionally not included.
+    if (0 != strncmp(o_name.c_str(), "/dev/", 5)) {
+      // First, chop off compressor and format extensions.
+      string inbase = chopext(in_path, decomp_idx);
+      // Chop off all initial '.' and '/' characters.  Those would otherwise
+      // turn into leading underscores later.  Could use regex_replace,
+      // but this also works.
+      int nsi = 0;
+      while (nsi < inbase.size() && (inbase[nsi] == '/' || inbase[nsi] == '.')) {
+        ++nsi;
+      }
+      if (nsi) {
+        inbase = inbase.substr(nsi, inbase.size() - nsi);
+      }
+      // Replace all '/' and '.' with '_'
+      inbase = regex_replace(inbase, regex("\\."), "_");
+      inbase = regex_replace(inbase, regex("/"), "_");
+      // Replace %{in} with inbase in output prefix.
+      o_name = regex_replace(o_name, regex("%\\{in\\}"), inbase);
+      // Replace %{n} with channel in output prefix.
+      o_name = regex_replace(o_name, regex("%\\{n\\}"), to_string(channel));
+      // Replace %{db} with dbbase in output prefix.
+      o_name = regex_replace(o_name, regex("%\\{db\\}"), dbbase);
+      // Output will be compressed with the same format as input.
+      out_path = o_name + ".tsv" + compext;
+      err_path = o_name + ".err";
+    }
+    auto output_exists = file_exists(out_path.c_str());
+    auto error_exists = file_exists(err_path.c_str());
+    if (force || error_exists || !(output_exists)) {
+      if (output_exists && !(error_exists)) {
+        assert(force);
+        cerr << chrono_time() << ":  [INFO] Forcing recompute for input: " << in_path << endl;
+      }
+      if (output_exists && error_exists) {
+        cerr << chrono_time() << ":  [INFO] Redoing input due to the presence of an error file: " << in_path << endl;
+      }
+      remove_output();
+      recreate_error();
+    } else {
+      cerr << chrono_time() << ":  [INFO] Skipping input due to pre-existing result; use -f to recompute: " << in_path << endl;
+      skip = true;
+    }
   }
   ~Result() {
     if (p_kmer_matches) {
@@ -688,7 +781,7 @@ struct Result {
         note_io_error();
       } else {
         assert(0 == strcmp(decomp[2], "tested_and_works"));
-        input_file = popen_decompressor(decomp[1], in_path.c_str());
+        input_file = popen_decompressor(decomp[1], full_inpath.c_str());
       }
     }
     if (errno || input_file == NULL || ferror(input_file)) {
@@ -714,7 +807,7 @@ struct Result {
     error_pos = min(error_pos, chars_read);
     if (!(error) && !(quiet)) {
       cerr << chrono_time() << ":  "
-           << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+           << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << full_inpath << endl;
     }
     io_error = true;
     error = true;
@@ -739,6 +832,7 @@ struct Result {
       fh << "[ERROR] Failed to read past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
     } else {
       fh << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
+      unique_lock<mutex> lk(*p_print_lock);
       cerr << chrono_time() << ":  "
            << "[ERROR] Failed to parse somewhere past position " << error_pos << " in presumed FASTQ file " << in_path << endl;
     }
@@ -757,6 +851,7 @@ struct Result {
     if (errno || rm_exit) {
       perror(rm_cmd.c_str());
       errno = 0;
+      unique_lock<mutex> lk(*p_print_lock);
       cerr << "[ERROR]:  Failed to remove pre-existing file " << path << ";  will not process input " << in_path << endl;
       note_io_error(true); // quiet
     }
@@ -777,8 +872,11 @@ struct Result {
             "If that's the case, don't trust any result files that may have been produced for this input.");
   }
   void write_output() {
-    cerr << chrono_time() << ":  "
-         << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
+    {
+      unique_lock<mutex> lk(*p_print_lock);
+      cerr << chrono_time() << ":  "
+           << "[Done] searching is completed for the " << n_reads << " reads input from " << in_path << endl;
+    }
     if (error) {
       write_error_info();
       return;
@@ -786,13 +884,16 @@ struct Result {
     FILE *out_file;
     auto check_output_error = [&](int code_line) -> bool {
       if (out_file == NULL || ferror(out_file)) {
-        cerr << chrono_time() << ":  "
-             << "[ERROR] Error writing output " << out_path << " cl " << code_line << endl;
-        if (errno) {
-          perror(out_path.c_str());
-          errno = 0;
+        {
+          unique_lock<mutex> lk(*p_print_lock);
+          cerr << chrono_time() << ":  "
+               << "[ERROR] Error writing output " << out_path << " cl " << code_line << endl;
+          if (errno) {
+            perror(out_path.c_str());
+            errno = 0;
+          }
+          output_error = true;
         }
-        output_error = true;
         write_error_info();
         return true;
       }
@@ -807,6 +908,7 @@ struct Result {
       return;
     }
     if (p_kmer_matches->size() == 0) {
+      unique_lock<mutex> lk(*p_print_lock);
       cerr << chrono_time() << ":  "
            << "[WARNING] found zero hits for the " << n_reads << " reads input from " << in_path << endl;
     } else {
@@ -823,15 +925,18 @@ struct Result {
         }
         ++n_snps;
         n_hits += (j - i);
-        fprintf(out_file, "%lu\t%lu\n", (*p_kmer_matches)[i], (j - i));
+        fprintf(out_file, "%" PRId64 "\t%" PRId64 "\n", (*p_kmer_matches)[i], (j - i));
         if (check_output_error(__LINE__)) {
           return;
         }
         i = j;
       }
-      cerr << chrono_time() << ":  "
-           << "[Stats] " << n_snps << " snps, " << n_reads << " reads, " << int((((double)n_hits) / n_snps) * 100) / 100.0
-           << " hits/snp, for " << in_path << endl;
+      {
+        unique_lock<mutex> lk(*p_print_lock);
+        cerr << chrono_time() << ":  "
+             << "[Stats] " << n_snps << " snps, " << n_reads << " reads, " << int((((double)n_hits) / n_snps) * 100) / 100.0
+             << " hits/snp, for " << in_path << endl;
+      }
     }
     if (decomp_idx == -1) {
       fclose(out_file);
@@ -868,7 +973,8 @@ private:
 };
 
 bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_index, uint64_t *snps, int n_inputs,
-                 const char *const *input_paths, char *o_name, const int M2, const int M3, const int n_threads) {
+                 const char **input_paths, char *o_name, const int M2, const int M3, const int n_threads, const string &dbbase,
+                 const bool force, const string &c_prefix) {
 
   auto s_start = chrono_time();
   const char *stdin = "/dev/stdin";
@@ -882,12 +988,13 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   }
 
   uint64_t total_reads = 0;
+  mutex print_lock;
 
   vector<Result *> results;
   for (int i = 0; i < n_inputs; ++i) {
     // This deletes any pre-existing output file and emits out.i.err if
     // the required decompressor for input_paths[i] is not installed.
-    results.push_back(new Result(i, input_paths[i], o_name));
+    results.push_back(new Result(i, input_paths[i], o_name, dbbase, force, &print_lock, c_prefix));
   }
 
   SegmentContext sc(n_threads);
@@ -939,12 +1046,15 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     }
   };
 
+  int closed_outputs = 0;
+
   // this function will output result for an input file
   auto write_output_func = [&](const int result_idx) {
     auto &r = *results[result_idx];
     r.write_output();
     {
       unique_lock<mutex> lk(queue_mtx);
+      ++closed_outputs;
       --running_threads;
       if (running_threads == 0 || running_threads == n_threads - 1) {
         lk.unlock();
@@ -966,8 +1076,15 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
       queue_cv.wait(lk, [&] {
         // Progress update.
         if ((total_reads - total_reads_last_update) >= PROGRESS_UPDATE_INTERVAL) {
-          cerr << chrono_time() << ":  " << (total_reads / 10000) / 100.0 << " million reads were scanned after "
-               << (chrono_time() - s_start) / 1000 << " seconds" << endl;
+          unique_lock<mutex> lk(print_lock);
+          cerr << chrono_time() << ":  [Progress] " << (total_reads / 10000) / 100.0 << " million reads scanned after "
+               << (chrono_time() - s_start) / 1000 << " seconds";
+          if (o_name) {
+            cerr << ", and " << closed_outputs << " files output.";
+          } else {
+            cerr << ".";
+          }
+          cerr << endl;
           total_reads_last_update = total_reads;
         }
         // Can we kick off any output writer threads?
@@ -982,10 +1099,12 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
           if (pending_output_result_idx == -1) {
             break;
           }
-          ++running_threads;
           auto &r = *results[pending_output_result_idx];
           r.done_with_output = true;
-          thread(write_output_func, pending_output_result_idx).detach();
+          if (!(r.skip)) {
+            ++running_threads;
+            thread(write_output_func, pending_output_result_idx).detach();
+          }
           while (first_result_idx_not_done_with_output < n_inputs &&
                  results[first_result_idx_not_done_with_output]->done_with_output) {
             first_result_idx_not_done_with_output += 1;
@@ -1010,6 +1129,16 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   };
 
   ReadersContext rc;
+
+  auto done_with_input = [&](const int channel) {
+    unique_lock<mutex> lk(queue_mtx);
+    results[channel]->finished_reading = true;
+    if (channel > last_result_idx_done_with_input) {
+      last_result_idx_done_with_input = channel;
+    }
+    lk.unlock();
+    queue_cv.notify_one();
+  };
 
   auto scan_input = [&](const int channel) {
     ReadersContextRelease rcr(rc);
@@ -1049,25 +1178,25 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
           segment.end_addr - segment.start_addr; // only used for error reporting: number of bytes preceding segment
     }
     r->close_input();
-    {
-      unique_lock<mutex> lk(queue_mtx);
-      if (channel > last_result_idx_done_with_input) {
-        last_result_idx_done_with_input = channel;
-      }
-      lk.unlock();
-      queue_cv.notify_one();
-    }
+    done_with_input(channel);
   };
 
   auto input_scan_loop = [&]() {
     // Dispatch scanner threads for all inputs in order
     // Pause when necessary to fit under MAX_PARALLEL_READERS threads
     for (int channel = 0; channel < n_inputs; ++channel) {
-      rc.acquire_reader();
-      thread(scan_input, channel).detach();
+      if (results[channel]->skip) {
+        done_with_input(channel);
+      } else {
+        rc.acquire_reader();
+        thread(scan_input, channel).detach();
+      }
     }
     // Wait for all reader threads to complete.
-    cerr << "[INFO] Waiting for all readers to quiesce" << endl;
+    {
+      unique_lock<mutex> lk(print_lock);
+      cerr << chrono_time() << ":  [INFO] Waiting for all readers to quiesce" << endl;
+    }
     rc.acquire_all();
     {
       unique_lock<mutex> lk(queue_mtx);
@@ -1084,9 +1213,12 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
        << (chrono_time() - s_start) / 1000 << " seconds" << endl;
   int files_with_errors = 0;
   int files_without_errors = 0;
+  int skipped_files = 0;
   uint64_t reads_covered = 0;
   for (int i = 0; i < n_inputs; ++i) {
-    if (results[i]->error || results[i]->output_error) {
+    if (results[i]->skip) {
+      ++skipped_files;
+    } else if (results[i]->error || results[i]->output_error) {
       ++files_with_errors;
     } else {
       ++files_without_errors;
@@ -1099,6 +1231,10 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
          << "Successfully processed " << files_without_errors << " input files containing " << reads_covered << " reads."
          << endl;
   }
+  if (skipped_files) {
+    cerr << chrono_time() << ":  "
+         << "Skipped " << skipped_files << " input files due to pre-existing results." << endl;
+  }
   if (files_with_errors) {
     cerr << "*** Failed for " << (files_without_errors == 0 ? "ALL " : "") << files_with_errors << " input files. ***" << endl;
   }
@@ -1106,19 +1242,62 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 }
 
 void display_usage(char *fname) {
-  cerr << "usage: " << fname
-       << " -d <sckmerdb_path: string> -t <n_threads; int; default 1> -o <out_prefix; string; default: cur_dir/out> [-h] "
-          "input1 [input2 ...]\n";
+  cerr << "GTPro version 2.0\n"
+       << "For copyright and licensing information, please see\n"
+       << "https://github.com/zjshi/gt-pro2.0/blob/master/LICENSE\n"
+       << "\n"
+       << "ARGUMENTS: \n"
+       << "  -d <sckmerdb_path: string> \n"
+       << "  -t <n_threads; int; default CPU_count>\n"
+       << "  -o <out_prefix; string; default: cur_dir/%{in}__gtpro__%{db}>\n"
+       << "  -l <number of index address bits; int 28..32; default: depends on machine RAM>\n"
+       << "  -m <bloom filter address bits; int 30..36; default: depends on machine RAM>\n"
+       << "  -h <display this usage info>\n"
+       << "  -f <force overwrite of pre-existing outputs>\n"
+       << "  -C <in_prefix; string; default: none>\n"
+       << "  [input0, input1, ...]\n"
+       << "\n"
+       << "WHERE\n"
+       << "\n"
+       << "  input1, input2, ... are files in FASTQ format, optionally compressed,\n"
+       << "  and optionally in the dir specified by -C, which may be an s3 bucket\n"
+       << "\n"
+       << "  when no inputs are specified, gt_pro consumes fastq input from stdin\n"
+       << "  until stdin reaches EOF, then emits all output to stdout at once\n"
+       << "\n"
+       << "  in the optional -o output prefix, %{db} expands to the DB name,\n"
+       << "  %{in} expands to the corresponding input base name, and %{n} expands\n"
+       << "  to the corresponding input number 0, 1, 2, ..., if input != stdin\n"
+       << "\n"
+       << "  -f causes any pre-existing output files to be overwritten\n"
+       << "\n"
+       << "USAGE EXAMPLES\n"
+       << "\n"
+       << "  The following two methods of running gtpro produce equivalent results.\n"
+       << "\n"
+       << "  Method 1:\n"
+       << "    gt_pro -d /path/to/db1234 -C /path/to/input test576/r1.fastq.lz4 test576/r2.fq.bz2\n"
+       << "\n"
+       << "  Method 2:\n"
+       << "    lz4 -dc /path/to/input/test576/r1.fastq.lz4 | gt_pro -d /path/to/db123 | lz4 -c > test576_r1__gtpro__db1234.tsv.lz4\n"
+       << "    lbzip2 -dc /path/to/input/test576/r2.fq.bz2 | gt_pro -d /path/to/db123 | lbzip2 -c > "
+          "test576_r2__gtpro__db1234.tsv.bz2\n"
+       << "\n"
+       << "  The primary difference is in performance and error handling.  Method 1 will create an\n"
+       << "  .err file for any input that fails, and will better utilize all available CPU cores.\n"
+       << "\n"
+       << "  To obtain simple sequential output names like out.0.tsv, out.1.tsv, ...\n"
+       << "  with forced overwriting of existing outputs, use arguments -f -o out.%{n}\n";
 }
 
 template <class ElementType> struct DBIndex {
 
   string filename;
-  bool loaded_or_mmapped;
+  bool mmapped;
 
   DBIndex(const string &filename, const uint64_t expected_element_count = 0)
-      : filename(filename), mmapped_data(NULL), loaded_or_mmapped(false), expected_element_count(expected_element_count),
-        fd(-1), filesize(0) {}
+      : filename(filename), mmapped_data(NULL), mmapped(false), expected_element_count(expected_element_count), fd(-1),
+        filesize(0) {}
 
   ElementType *address() {
     if (mmapped_data) {
@@ -1138,27 +1317,23 @@ template <class ElementType> struct DBIndex {
 
   vector<ElementType> *getElementsVector() { return &(elements); }
 
-  // If file exists and nonempty, preload or mmap depending on argument, and return false.
+  // If file exists and nonempty, mmap it and return false;
   // If file is missing or empty, allocate space in elements array and return true.
-  bool mmap_or_load(const bool preload = false) {
-    assert(!(loaded_or_mmapped));
+  bool mmap() {
+    assert(!(mmapped));
     filesize = get_fsize(filename.c_str());
     if (filesize) {
       if (!(expected_element_count)) {
         expected_element_count = filesize / sizeof(ElementType);
       }
       assert(filesize == expected_element_count * sizeof(ElementType));
-      if (preload) {
-        load();
-      } else {
-        MMAP();
-      }
+      MMAP_FOR_REAL();
     }
-    if (loaded_or_mmapped) {
+    if (mmapped) {
       // Does not need to be recomputed.
       return false;
     }
-    cerr << chrono_time() << ":  Failed to MMAP or preload " << filename
+    cerr << chrono_time() << ":  Failed to MMAP " << filename
          << ".  This is fine, but init will be slower as we recreate this file." << endl;
     elements.resize(expected_element_count);
     // needs to be recomputed
@@ -1166,7 +1341,7 @@ template <class ElementType> struct DBIndex {
   }
 
   void save() {
-    assert(!(loaded_or_mmapped));
+    assert(!(mmapped));
     auto l_start = chrono_time();
     FILE *dbout = fopen(filename.c_str(), "wb");
     assert(dbout);
@@ -1180,7 +1355,7 @@ template <class ElementType> struct DBIndex {
   ~DBIndex() {
     if (fd != -1) {
       assert(mmapped_data);
-      assert(loaded_or_mmapped);
+      assert(mmapped);
       int rc = munmap(mmapped_data, filesize);
       assert(rc == 0);
       close(fd);
@@ -1194,28 +1369,14 @@ private:
   int fd;
   uint64_t filesize;
 
-  void load() {
-    FILE *dbin = fopen(filename.c_str(), "rb");
-    if (dbin) {
-      cerr << chrono_time() << ":  Loading " << filename << endl;
-      elements.resize(expected_element_count);
-      const auto loaded_element_count = fread(address(), sizeof(ElementType), expected_element_count, dbin);
-      if (loaded_element_count == expected_element_count) {
-        cerr << chrono_time() << ":  Loaded " << filename << endl;
-        loaded_or_mmapped = true;
-      }
-      fclose(dbin);
-    }
-  }
-
-  void MMAP() {
+  void MMAP_FOR_REAL() {
     fd = open(filename.c_str(), O_RDONLY, 0);
     if (fd != -1) {
       cerr << chrono_time() << ":  MMAPPING " << filename << endl;
-      auto mmappedData = (ElementType *)mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
+      auto mmappedData = (ElementType *)::mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
       if (mmappedData != MAP_FAILED) {
         mmapped_data = mmappedData;
-        loaded_or_mmapped = true;
+        mmapped = true;
         // cerr << chrono_time() << ":  MMAPPED " << filename << endl;
       }
     }
@@ -1239,7 +1400,12 @@ int main(int argc, char **argv) {
 
   char *fname = argv[0];
   char *db_path = (char *)"";
-  char *oname = (char *)"./out";
+  char *c_prefix = (char *)"";
+
+  // Output name matches input name and includes DB tag.
+  // TODO: Make it possible to deposit output right next to input,
+  // in the same folder (for inputs that are folder-structured).
+  char *oname = (char *)"%{in}__gtpro__%{db}";
 
   // Number of bits in the prefix part of the K-mer (also called L-mer,
   // even though it might not correspond to an exact number of bases).
@@ -1258,13 +1424,17 @@ int main(int argc, char **argv) {
   int n_threads = 1;
 
   auto preload = false;
+  auto force = false;
 
   int opt;
-  while ((opt = getopt(argc, argv, "pl:m:d:t:o:h")) != -1) {
+  while ((opt = getopt(argc, argv, "fl:m:d:C:t:o:h")) != -1) {
     switch (opt) {
     case 'd':
       dbflag = true;
       db_path = optarg;
+      break;
+    case 'C':
+      c_prefix = optarg;
       break;
     case 't':
       n_threads = stoi(optarg);
@@ -1278,8 +1448,8 @@ int main(int argc, char **argv) {
     case 'm':
       M3 = stoi(optarg);
       break;
-    case 'p':
-      preload = true;
+    case 'f':
+      force = true;
       break;
     case 'h':
     case '?':
@@ -1301,8 +1471,8 @@ int main(int argc, char **argv) {
   const auto MMER_MASK = (LSB << M2) - LSB;
   const auto MAX_BLOOM = (LSB << M3) - LSB;
 
-  cerr << fname << '\t' << db_path << '\t' << n_threads << "\t" << (preload ? "preload" : "mmap") << "\t" << L2 << "\t" << M3
-       << endl;
+  cerr << fname << '\t' << db_path << '\t' << n_threads << "\t" << (force ? "force_overwrite" : "no_overwrite") << "\t" << L2
+       << "\t" << M3 << endl;
 
   if (!dbflag) {
     cerr << "missing argument: -d <sckmerdb_path: string>\n";
@@ -1322,10 +1492,6 @@ int main(int argc, char **argv) {
   dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
   dbbase = regex_replace(dbbase, regex("\\."), "_");
 
-  if (preload) { // force preload, probably unnecessary and wasteful
-    cerr << chrono_time() << ":  DB indexes will be preloaded." << endl;
-  }
-
   // The input (un-optimized) DB is a sequence of 56-bit snp followed by 1-bit forward/rc indicator,
   // then 7 bit offset of SNP within kmer, then 64-bit kmer.  The 56-bit snp encodes the species id,
   // major/minor allele, and genomic position.  From that we build the "optimized" DBs
@@ -1333,25 +1499,25 @@ int main(int argc, char **argv) {
   // for each SNP in addition to the 56-bits mentioned above it also shows the
   // sequence of 61bp centered on the SNP inferred from all kmers in the original DB.
   DBIndex<uint64_t> db_snps(dbbase + "_optimized_db_snps.bin");
-  const bool recompute_snps = db_snps.mmap_or_load(preload);
+  const bool recompute_snps = db_snps.mmap();
 
   // This encodes the list of all kmers, sorted in increasing order.  Each kmer is represented
   // not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
   // an index into the db_snps table above, and 5 bits representing the SNP position within
   // the kmer;  possibly using the kmer's reverse complement instead of the kmer.
   DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index.bin");
-  const bool recompute_kmer_index = db_kmer_index.mmap_or_load(preload);
+  const bool recompute_kmer_index = db_kmer_index.mmap();
 
   // Bit vector with one presence/absence bit for every possible M3-bit kmer suffix (the M3
   // LSBs of a kmer's nucleotide sequence).
   DBIndex<uint64_t> db_mmer_bloom(dbbase + "_optimized_db_mmer_bloom_" + to_string(M3) + ".bin", (1 + MAX_BLOOM) / 64);
-  const bool recompute_mmer_bloom = db_mmer_bloom.mmap_or_load(preload);
+  const bool recompute_mmer_bloom = db_mmer_bloom.mmap();
 
   // For every kmer in the original DB, the most-signifficant L2 bits of the kmer's nucleotide sequence
   // are called that kmer's lmer.  Kmers that share the same lmer occupy a range of consecutive
   // positions in the kmer_index, and that range is lmer_index[lmer].
   DBIndex<LmerRange> db_lmer_index(dbbase + "_optimized_db_lmer_index_" + to_string(L2) + ".bin", 1 + LMER_MASK);
-  const bool recompute_lmer_index = db_lmer_index.mmap_or_load(preload);
+  const bool recompute_lmer_index = db_lmer_index.mmap();
   LmerRange *lmer_index = db_lmer_index.address();
 
   assert(recompute_kmer_index == recompute_snps &&
@@ -1665,8 +1831,9 @@ int main(int argc, char **argv) {
 
   l_start = chrono_time();
 
-  const auto errors = kmer_lookup(lmer_index, db_mmer_bloom.address(), db_kmer_index.address(), db_snps.address(),
-                                  argc - optind, argv + optind, oname, M2, M3, n_threads);
+  const auto errors =
+      kmer_lookup(lmer_index, db_mmer_bloom.address(), db_kmer_index.address(), db_snps.address(), argc - optind,
+                  (const char **)argv + optind, oname, M2, M3, n_threads, dbbase, force, c_prefix);
 
   if (fd != -1 && db_data != NULL) {
     int rc = munmap(db_data, db_filesize);
