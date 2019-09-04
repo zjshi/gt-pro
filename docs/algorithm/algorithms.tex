@@ -340,9 +340,9 @@ When constructing the index and bloom filter, using odd numbers of bits from the
 
 To avoid running separate queries for the forward and reverse-complement orientation of each input sequence, we query for the orientation whose integer encoding is smaller.
 
-Correspondingly, when sorting the \KmersTable{} to build the index, the sort key for each (forward, rc) kmer pair is the element of that pair whose integer encoding is smaller.
+Accordingly, in sorting the \KmersTable{}, the sort key for each (forward, rc) kmer pair must be the element of that pair whose integer encoding is smaller.
 
-An extra 64-bit integer comparison of \var{query} to \var{reverse_complement(db_kmer)} is needed in case the recovered \var{db_kmer} from the \AllelesTable{} is for the opposite DNA strand from \var{query}.  That is much cheaper than the extra memory lookup it avoids.  
+The only catch is that the recovered \var{db_kmer} from the \AllelesTable{} may be the reverse-complement of \var{query}.  That can be addressed with an additional 64-bit integer comparison of \var{reverse_complement(query)} to \var{db_kmer}.  This extra integer comparison is much cheaper than the whole second query it replaces, because it doesn't touch RAM.
 
 \pagebreak
 
