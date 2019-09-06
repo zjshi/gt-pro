@@ -103,6 +103,128 @@ const char *compressors[][3] = {
 
 extern int errno;
 
+long chrono_time() {
+  using namespace chrono;
+  return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+struct Command {
+  bool success;
+  int exit_code;
+  string output;
+  string cmd;
+  Command(const string& cmd) : cmd(cmd), exit_code(-1), success(false) {}
+  void run() {
+    assert(errno == 0);
+    char *line_str = NULL;
+    size_t line_cap = 0;
+    cerr << chrono_time() << ":  [Info] Command: " << cmd << endl;
+    FILE *f = popen(cmd.c_str(), "r");
+    if (errno == 0 && f) {
+      const auto chars_read = getline(&line_str, &line_cap, f);
+      if (chars_read > 0 && line_str[chars_read - 1] == '\n') {
+        line_str[chars_read - 1] = 0;
+      }
+      output = string(line_str);
+      cerr << chrono_time() << ":  [Info] Output: " << output << endl;
+      if (errno == 0) {
+        exit_code = pclose(f);
+        if (errno == 0 && exit_code == 0) {
+          success = true;
+        }
+      }
+    }
+    if (line_str) {
+      free(line_str);
+    }
+  }
+};
+
+double system_ram_mac() {
+  double result = 0;
+  Command cmd("sysctl hw.memsize | grep '^hw.memsize:' | awk '{print $2}'");
+  cmd.run();
+  if (cmd.success) {
+    result = atof(cmd.output.c_str()) / (1ULL << 30);
+  }
+  return result;
+}
+
+double system_ram_linux() {
+  double result = 0;
+  Command cmd("grep '^MemTotal:' /proc/meminfo  | awk '{print $2}'");
+  cmd.run();
+  if (cmd.success) {
+    result = atof(cmd.output.c_str()) / (1ULL << 20);
+  }
+  return result;
+}
+
+// Return system RAM in GB
+double system_ram(const bool quiet=false) {
+  Command cmd("uname");
+  cmd.run();
+  if (cmd.success) {
+    if (cmd.output == "Darwin") {
+      return system_ram_mac();
+    }
+    if (cmd.output == "Linux") {
+      return system_ram_linux();
+    }
+    if (!(quiet)) {
+      cerr << chrono_time() << ":  [ERROR]  Unsupported system: " << cmd.output << endl;
+    }
+  }
+  return 0.0;
+}
+
+// Look up optimal -l and -m in the table of experimental results for the reference DB.
+bool choose_optimal_l_and_m(int& l, int& m, double db_size, bool explicit_l_and_m) {
+  bool success = true;
+  const auto ram_gb = system_ram(explicit_l_and_m);
+  if (ram_gb < 1.0) {
+    cerr << chrono_time() << ":  [ERROR]  Failed to determine system RAM size." << endl;
+    success = false;
+  } else {
+    db_size /= (1ULL << 30); // convert to gigs
+    const auto reference_db_size = 13.0;
+    const auto refeq_size = ram_gb - db_size + reference_db_size;
+    cerr << "ram_gb = " << ram_gb << endl;
+    cerr << "refeq_size = " << refeq_size << endl;
+    if (refeq_size > 57) {
+      l = 32;
+      m = 36;
+    } else if (refeq_size > 41) {
+      l = 31;
+      m = 36;
+    } else if (refeq_size > 32) {
+      l = 30;
+      m = 36;
+    } else if (refeq_size > 27) {
+      l = 30;
+      m = 35;
+    } else if (refeq_size > 23) {
+      l = 29;
+      m = 35;
+    } else if (refeq_size > 21) {
+      l = 29;
+      m = 34;
+    } else if (refeq_size > 20) {
+      l = 29;
+      m = 33;
+    } else if (refeq_size > 18) {
+      l = 28;
+      m = 33;
+    } else if (refeq_size > 17) {
+      l = 28;
+      m = 31;
+    } else {
+      success = false;
+    }
+  }
+  return success;
+}
+
 int test_compressor(const char *compressor) {
   // Return "true" iff the specified compressor is available on the system and
   // successfully compresses and decompresses our test string.
@@ -305,11 +427,6 @@ uint64_t reverse_complement(uint64_t dna) {
     rc |= (dna & BASE_MASK);
   }
   return rc;
-}
-
-long chrono_time() {
-  using namespace chrono;
-  return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
 static bool ends_with(const std::string &str, const std::string &suffix) {
@@ -747,15 +864,15 @@ struct Result {
     if (force || error_exists || !(output_exists)) {
       if (output_exists && !(error_exists)) {
         assert(force);
-        cerr << chrono_time() << ":  [INFO] Forcing recompute for input: " << in_path << endl;
+        cerr << chrono_time() << ":  [Info] Forcing recompute for input: " << in_path << endl;
       }
       if (output_exists && error_exists) {
-        cerr << chrono_time() << ":  [INFO] Redoing input due to the presence of an error file: " << in_path << endl;
+        cerr << chrono_time() << ":  [Info] Redoing input due to the presence of an error file: " << in_path << endl;
       }
       remove_output();
       recreate_error();
     } else {
-      cerr << chrono_time() << ":  [INFO] Skipping input due to pre-existing result; use -f to recompute: " << in_path << endl;
+      cerr << chrono_time() << ":  [Info] Skipping input due to pre-existing result; use -f to recompute: " << in_path << endl;
       skip = true;
     }
   }
@@ -980,8 +1097,8 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
   const char *stdin = "/dev/stdin";
 
   if (n_inputs == 0 || input_paths == NULL || o_name == NULL) {
-    cerr << chrono_time() << ":  [INFO] Will input reads from stdin and output snps to stdout." << endl;
-    cerr << chrono_time() << ":  [INFO] Output will appear only after stdin reaches EOF." << endl;
+    cerr << chrono_time() << ":  [Info] Will input reads from stdin and output snps to stdout." << endl;
+    cerr << chrono_time() << ":  [Info] Output will appear only after stdin reaches EOF." << endl;
     n_inputs = 1;
     input_paths = &stdin;
     o_name = NULL;
@@ -1195,7 +1312,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
     // Wait for all reader threads to complete.
     {
       unique_lock<mutex> lk(print_lock);
-      cerr << chrono_time() << ":  [INFO] Waiting for all readers to quiesce" << endl;
+      cerr << chrono_time() << ":  [Info] Waiting for all readers to quiesce" << endl;
     }
     rc.acquire_all();
     {
@@ -1315,11 +1432,15 @@ template <class ElementType> struct DBIndex {
     }
   }
 
+  uint64_t dataSize() {
+    return elementCount() * sizeof(ElementType);
+  }
+
   vector<ElementType> *getElementsVector() { return &(elements); }
 
   // If file exists and nonempty, mmap it and return false;
   // If file is missing or empty, allocate space in elements array and return true.
-  bool mmap() {
+  bool mmap(const uint64_t db_filesize) {
     assert(!(mmapped));
     filesize = get_fsize(filename.c_str());
     if (filesize) {
@@ -1333,8 +1454,12 @@ template <class ElementType> struct DBIndex {
       // Does not need to be recomputed.
       return false;
     }
-    cerr << chrono_time() << ":  Failed to MMAP " << filename
-         << ".  This is fine, but init will be slower as we recreate this file." << endl;
+    if (db_filesize) {
+      cerr << chrono_time() << ":  Failed to MMAP " << filename
+           << ".  This is fine, but init will be slower as we recreate this file." << endl;
+    } else {
+      cerr << chrono_time() << ":  Failed to MMAP " << filename << " and lack the source to regenerate it." << endl;
+    }
     elements.resize(expected_element_count);
     // needs to be recomputed
     return true;
@@ -1372,7 +1497,7 @@ private:
   void MMAP_FOR_REAL() {
     fd = open(filename.c_str(), O_RDONLY, 0);
     if (fd != -1) {
-      cerr << chrono_time() << ":  MMAPPING " << filename << endl;
+      cerr << chrono_time() << ":  [Info] MMAPPING " << filename << endl;
       auto mmappedData = (ElementType *)::mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
       if (mmappedData != MAP_FAILED) {
         mmapped_data = mmappedData;
@@ -1419,12 +1544,17 @@ int main(int argc, char **argv) {
   // Number of bits in the MMER_BLOOM index.  This has a substantial effect
   // on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
   // Override with command line -m parameter.
-  auto M3 = 36;
+  auto M3 = 35;
+
+  // The default L2 and M3 above are good for 32GB Apple MacBook Pro laptop.
 
   int n_threads = 1;
 
   auto preload = false;
   auto force = false;
+
+  auto explicit_l = false;
+  auto explicit_m = false;
 
   int opt;
   while ((opt = getopt(argc, argv, "fl:m:d:C:t:o:h")) != -1) {
@@ -1444,9 +1574,11 @@ int main(int argc, char **argv) {
       break;
     case 'l':
       L2 = stoi(optarg);
+      explicit_l = true;
       break;
     case 'm':
       M3 = stoi(optarg);
+      explicit_m = true;
       break;
     case 'f':
       force = true;
@@ -1455,6 +1587,69 @@ int main(int argc, char **argv) {
     case '?':
       display_usage(fname);
       exit(1);
+    }
+  }
+
+  if (!dbflag) {
+    cerr << "missing argument: -d <sckmerdb_path: string>\n";
+    display_usage(fname);
+    exit(1);
+  }
+
+  if (explicit_l != explicit_m) {
+    cerr << chrono_time() << "please specify both or neither of -l and -m\n";
+    display_usage(fname);
+    exit(-1);
+  }
+
+  cerr << fname << '\t' << db_path << '\t' << n_threads << "\t" << (force ? "force_overwrite" : "no_overwrite") << endl;
+
+  int in_pos = optind;
+
+  auto l_start = chrono_time();
+  cerr << chrono_time() << ":  "
+       << "[Info] Starting to load DB: " << db_path << endl;
+
+  uint64_t db_filesize = get_fsize(db_path);
+
+  string dbbase = string(basename(db_path));
+  dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
+  dbbase = regex_replace(dbbase, regex("\\."), "_");
+
+  // The input (un-optimized) DB is a sequence of 56-bit snp followed by 1-bit forward/rc indicator,
+  // then 7 bit offset of SNP within kmer, then 64-bit kmer.  The 56-bit snp encodes the species id,
+  // major/minor allele, and genomic position.  From that we build the "optimized" DBs
+  // below.  The first one, db_snps, lists the unique SNPs in arbitrary order; and
+  // for each SNP in addition to the 56-bits mentioned above it also shows the
+  // sequence of 61bp centered on the SNP inferred from all kmers in the original DB.
+  DBIndex<uint64_t> db_snps(dbbase + "_optimized_db_snps.bin");
+  const bool recompute_snps = db_snps.mmap(db_filesize);
+
+  // This encodes the list of all kmers, sorted in increasing order.  Each kmer is represented
+  // not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
+  // an index into the db_snps table above, and 5 bits representing the SNP position within
+  // the kmer;  possibly using the kmer's reverse complement instead of the kmer.
+  DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index.bin");
+  const bool recompute_kmer_index = db_kmer_index.mmap(db_filesize);
+
+
+  {
+    int l2 = L2;
+    int m3 = M3;
+    const bool found_optimal_vals = choose_optimal_l_and_m(l2, m3, db_kmer_index.dataSize() + db_snps.dataSize(), explicit_l && explicit_m);
+    // cerr << "Found optimal vals: " << found_optimal_vals << endl;
+    if (explicit_l || explicit_m) {
+      if (found_optimal_vals && (l2 != L2 || m3 != M3)) {
+        cerr << chrono_time() << ":  [WARNING] Arguments -l " << L2 << " -m " << M3 << " override optimal values -l " << l2 << " -m " << m3 << endl;
+      }
+    } else {
+      if (found_optimal_vals) {
+        cerr << chrono_time() << ":  [Info] Using -l " << l2 << " -m " << m3 << " as optimal for system RAM" << endl;
+      } else {
+        cerr << chrono_time() << ":  [WARNING] Using -l " << l2 << " -m " << m3 << " parameter defaults.  Optimal values could not be determined on this system;  performance may suffer." << endl;
+      }
+      L2 = l2;
+      M3 = m3;
     }
   }
 
@@ -1470,43 +1665,6 @@ int main(int argc, char **argv) {
   const auto LMER_MASK = (LSB << L2) - LSB;
   const auto MMER_MASK = (LSB << M2) - LSB;
   const auto MAX_BLOOM = (LSB << M3) - LSB;
-
-  cerr << fname << '\t' << db_path << '\t' << n_threads << "\t" << (force ? "force_overwrite" : "no_overwrite") << "\t" << L2
-       << "\t" << M3 << endl;
-
-  if (!dbflag) {
-    cerr << "missing argument: -d <sckmerdb_path: string>\n";
-    display_usage(fname);
-    exit(1);
-  }
-
-  int in_pos = optind;
-
-  auto l_start = chrono_time();
-  cerr << chrono_time() << ":  "
-       << "Starting to load DB: " << db_path << endl;
-
-  uint64_t db_filesize = get_fsize(db_path);
-
-  string dbbase = string(basename(db_path));
-  dbbase = regex_replace(dbbase, regex("\\.bin$"), "");
-  dbbase = regex_replace(dbbase, regex("\\."), "_");
-
-  // The input (un-optimized) DB is a sequence of 56-bit snp followed by 1-bit forward/rc indicator,
-  // then 7 bit offset of SNP within kmer, then 64-bit kmer.  The 56-bit snp encodes the species id,
-  // major/minor allele, and genomic position.  From that we build the "optimized" DBs
-  // below.  The first one, db_snps, lists the unique SNPs in arbitrary order; and
-  // for each SNP in addition to the 56-bits mentioned above it also shows the
-  // sequence of 61bp centered on the SNP inferred from all kmers in the original DB.
-  DBIndex<uint64_t> db_snps(dbbase + "_optimized_db_snps.bin");
-  const bool recompute_snps = db_snps.mmap();
-
-  // This encodes the list of all kmers, sorted in increasing order.  Each kmer is represented
-  // not by the 62 bits of its 31-bp nucleotide sequence but rather by 27-bits that represent
-  // an index into the db_snps table above, and 5 bits representing the SNP position within
-  // the kmer;  possibly using the kmer's reverse complement instead of the kmer.
-  DBIndex<uint32_t> db_kmer_index(dbbase + "_optimized_db_kmer_index.bin");
-  const bool recompute_kmer_index = db_kmer_index.mmap();
 
   // Bit vector with one presence/absence bit for every possible M3-bit kmer suffix (the M3
   // LSBs of a kmer's nucleotide sequence).
@@ -1826,7 +1984,7 @@ int main(int argc, char **argv) {
     db_lmer_index.save();
   }
 
-  cerr << chrono_time() << ":  Done with init for optimized DB with " << db_kmer_index.elementCount() << " kmers.  That took "
+  cerr << chrono_time() << ":  [Info] Done with init for optimized DB with " << db_kmer_index.elementCount() << " kmers.  That took "
        << (chrono_time() - l_start) / 1000 << " seconds." << endl;
 
   l_start = chrono_time();
