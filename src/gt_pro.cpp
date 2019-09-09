@@ -144,8 +144,8 @@ struct Command {
   }
 };
 
-double system_ram_mac() {
-  double result = 0;
+double system_ram_mac(const double default_result) {
+  double result = default_result;
   Command cmd("sysctl hw.memsize | grep '^hw.memsize:' | awk '{print $2}'");
   cmd.run();
   if (cmd.success) {
@@ -154,8 +154,8 @@ double system_ram_mac() {
   return result;
 }
 
-double system_ram_linux() {
-  double result = 0;
+double system_ram_linux(const double default_result) {
+  double result = default_result;
   Command cmd("grep '^MemTotal:' /proc/meminfo  | awk '{print $2}'");
   cmd.run();
   if (cmd.success) {
@@ -165,21 +165,21 @@ double system_ram_linux() {
 }
 
 // Return system RAM in GB
-double system_ram(const bool quiet=false) {
+double system_ram(const bool quiet=false, const double default_result=0.0) {
   Command cmd("uname");
   cmd.run();
   if (cmd.success) {
     if (cmd.output == "Darwin") {
-      return system_ram_mac();
+      return system_ram_mac(default_result);
     }
     if (cmd.output == "Linux") {
-      return system_ram_linux();
+      return system_ram_linux(default_result);
     }
     if (!(quiet)) {
       cerr << chrono_time() << ":  [ERROR]  Unsupported system: " << cmd.output << endl;
     }
   }
-  return 0.0;
+  return default_result;
 }
 
 // Look up optimal -l and -m in the table of experimental results for the reference DB.
