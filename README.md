@@ -149,7 +149,9 @@ If everything runs to finishing without error, parsed GT-Pro will be printed to 
 #### gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv`  
 
-### Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses. You might consume less network bandwidth but a 10X speed drop is expected.
+### Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses.
+
+You might consume less network bandwidth but a 10X speed drop is expected.
 
 #### Bit encoded sckmers and sc-spans  
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
