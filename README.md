@@ -1,11 +1,11 @@
-# GT-Pro 
+# GT-Pro - the GenoTyper for PROkaryotes  
 
 lightweight and rapid tool for prokaryotes genotyping in metagenomes
 
 Rationale:
 Large public databases of genome and metagenome sequences contain a wealth of information on the population structure of many microbes. For some well-studied environments, like the human gut, these data should be sufficient to build high resolution maps of genomic variation for common species. Maps of genome variation can in turn be used to identify core-genome regions and common SNPs within the core-genome.
 
-Based on these maps of genomic variation, it should be possible to design a lightweight method to scan new short-read datasets, and genotype the populations.   
+Based on these maps of genomic variation, we design a lightweight method to scan new short-read datasets, and genotype the populations.   
 
 ## Dependencies
 
@@ -17,10 +17,11 @@ If you have input sequenncing data in gzip format, the following dependency is r
 
 ## Installation
 
+`git clone https://github.com/zjshi/gt-pro.git`
 `cd /path/to/gt-pro/`  
 `make`  
 
-Three binary files should be found in the same directory as /path/to/gt-pro/, they are sckmerdb_build and gt_pro. The programs can be put under your favorite system path or directly referenced through full path.  
+Two binary files should be found in the same directory as /path/to/gt-pro/, they are sckmerdb_build and gt_pro. The programs can be put under your favorite system path or directly referenced through full path.  
 
 <b>Notes for C++ compiler</b>
 
@@ -30,30 +31,31 @@ gt-pro requires C++ compiler to work properly. The compiler should be compatible
 
 ### Necessary downloads:
 
-Bit encoded sckmers and sc-spans  
+#### Bit encoded sckmers and sc-spans  
 `aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_kmer_index.bin ./`  
 `aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_snps.bin ./`  
 
-Dictionary for parsing gt-pro raw output  
-`wget http://jason.shi-bucket.s3.amazonaws.com/tmp/variants_main.covered.hq.snp_dict.tsv`  
+#### Dictionary for parsing gt-pro raw output  
+`aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./`  
 
 ### Quick usage:  
 
-build your build sckmerdb from k-mer profile files  
+#### create an optimized version of the database for your machine  
 `/path/to/gt_pro -d /path/to/database_prefix </dev/null`  
 
-metagenotyping in sequencing samples  
+#### metagenotyping in sequencing samples  
 `/path/to/gt_pro -d /path/to/database_prefix -C /path/to/my_inputs 1.fastq[.lz4, .gz, .bz2], 2.fastq....`  
 
-parse gt-pro raw output  
+#### parse gt-pro raw output  
 `python3 ./script/gtp_parse.py --dict /path/to/snp_dict.tsv --in </path/to/gt_pro_output> --v2`  
 
 ### Step-by-step usage:
 
-#### Step 1: clone GT-Pro repo to your favorite location and change direction to it
+#### Step 1: clone GT-Pro repo to your favorite location and change current directory to it
 
 `git clone https://github.com/zjshi/gt-pro.git`  
 `cd /path/to/gt-pro`  
+`make`  
 
 #### Step 2: download raw material. The raw material consists of two binary files stored in a AWS S3 bucket and can be downloaded with the following command
 
@@ -95,12 +97,31 @@ If you prefer the previous style of numbered outputs, you may obtain that via th
 gtp_parse.py is a parser written in Python script, please see its helper text for more detailed usage.  
 For snp_dict.tsv downloading, please see "Download sckmerdb" section.  
 
-## Downloading information
-species taxonomy metadata  
-`wget http://jason.shi-bucket.s3.amazonaws.com/sckmerdb/gut_species_taxonomy.tsv`  
+## Other downloading information
 
-gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
-`wget http://jason.shi-bucket.s3.amazonaws.com/tmp/variants_main.covered.hq.snp_dict.tsv`  
+In general, AWS tools are recommnded for downloading files with large volume.
+
+#### Bit encoded sckmers and sc-spans  
+`aws s3 cp s3://jason.shi-bucket/public/20190723_881species_optimized_db_kmer_index.bin ./`  
+`aws s3 cp s3://jason.shi-bucket/public/20190723_881species_optimized_db_snps.bin ./`  
+
+#### species taxonomy metadata  
+`aws s3 cp s3://jason.shi-bucket/public/species_taxonomy_ext.tsv`  
+
+#### gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
+`aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv`  
+
+Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses. You might consume less network bandwidth but a 10X speed drop is expected.
+
+#### Bit encoded sckmers and sc-spans  
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_snps.bin`  
+
+#### species taxonomy metadata  
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/species_taxonomy_ext.tsv`  
+
+#### gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/variants_main.covered.hq.snp_dict.tsv`  
 
 ## Mini example:  
 `./gt_pro -d ./20190723_881species.bin -C test/ SRR413665_2.fastq.gz`  
