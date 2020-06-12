@@ -25,8 +25,14 @@ If you have input sequenncing data in gzip, bzip2 and lz4 format, the following 
 
 ## Installation
 
-`git clone https://github.com/zjshi/gt-pro.git`
+First, retrieve a copy of GT-Pro to your local computing environment  
+
+`git clone https://github.com/zjshi/gt-pro.git`  
+
+Change your current working directory in to where you put GT-Pro  
 `cd /path/to/gt-pro/`  
+
+Type in the command line to compile the source code of GT-Pro  
 `make`  
 
 Two binary files should be found in the same directory as /path/to/gt-pro/, they are sckmerdb_build and gt_pro. The programs can be put under your favorite system path or directly referenced through full path.  
