@@ -130,14 +130,14 @@ gtp_parse.py is a parser written in Python script, please see its helper text fo
 To verify GT-Pro is good to go at this stage, simply try the following command lines
 
 `./gt_pro -d ./20190723_881species -C test/ SRR413665_2.fastq.gz`  
-`gunzip ./SRR413665_2__gtpro__20190723_881species.tsv.gz`
-`python3 ./scripts/gtp_parse.py --dict variants_main.covered.hq.snp_dict.tsv --in ./SRR413665_2__gtpro__20190723_881species.tsv --v2`
+`gunzip ./SRR413665_2__gtpro__20190723_881species.tsv.gz`  
+`python3 ./scripts/gtp_parse.py --dict variants_main.covered.hq.snp_dict.tsv --in ./SRR413665_2__gtpro__20190723_881species.tsv --v2`  
 
 If everything runs to finishing without error, parsed GT-Pro will be printed to standard output.
 
 ## Other downloading information
 
-In general, AWS tools are recommnded for downloading files with large volume.
+### In general, AWS tools are recommnded for downloading files with large volume.
 
 #### Bit encoded sckmers and sc-spans  
 `aws s3 cp s3://jason.shi-bucket/public/20190723_881species_optimized_db_kmer_index.bin ./`  
@@ -149,7 +149,7 @@ In general, AWS tools are recommnded for downloading files with large volume.
 #### gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv`  
 
-Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses. You might consume less network bandwidth but a 10X speed drop is expected.
+### Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses. You might consume less network bandwidth but a 10X speed drop is expected.
 
 #### Bit encoded sckmers and sc-spans  
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
