@@ -1365,9 +1365,9 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 }
 
 void display_usage(char *fname) {
-  cerr << "GTPro version 2.0\n"
+  cerr << "GTPro version 1.0.0\n"
        << "For copyright and licensing information, please see\n"
-       << "https://github.com/zjshi/gt-pro2.0/blob/master/LICENSE\n"
+       << "https://github.com/zjshi/gt-pro/blob/master/LICENSE\n"
        << "\n"
        << "ARGUMENTS: \n"
        << "  -d <sckmerdb_path: string> \n"
