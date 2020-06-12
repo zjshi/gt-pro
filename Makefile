@@ -1,4 +1,4 @@
-all: sckmerdb_inspect sckmerdb_build gtpro
+all: sckmerdb_build gtpro
 	@echo "GTPro build completed."
 
 gtpro:  ./src/gt_pro.cpp Makefile
