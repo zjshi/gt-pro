@@ -171,3 +171,7 @@ You might consume less network bandwidth but a 10X speed drop is expected.
 #### gt-pro raw output parsing dictionary (updated to include chrom and local position fields)  
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/variants_main.covered.hq.snp_dict.tsv`  
 
+
+## How to cite
+
+If you find GT-Pro helpful, please consider cite our Biorxiv paper for now: Zhou Jason Shi, Boris Dimitrov, Chunyu Zhao, Stephen Nayfach, Katherine S. Pollard; "Ultra-rapid metagenotyping of the human gut microbiome"; bioRxiv 2020.06.12.149336; doi: https://doi.org/10.1101/2020.06.12.149336
