@@ -56,7 +56,7 @@ gt-pro requires C++ compiler to work properly. The compiler should be compatible
 
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./`  
 
-<b>Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses, if you don't have access to aws accounts and tools</b>
+<b>Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses, if you don't have access to aws accounts and cli</b>
 <b>Please see the section of "Other downloading information" for details</b>
 
 ### Quick usage:  
@@ -75,9 +75,9 @@ gt-pro requires C++ compiler to work properly. The compiler should be compatible
 
 ## Step-by-step Tutorial (for starter):
 
-### downloading notes
+### Downloading notes
 
-This tutorial involve multiple downloads using aws tools which is fast and recommended. However, if you don't have access to aws account and tools, the downloads can be achieved  with more standard tools, e.g. wget, through http addresses. Details could be found in the section of "Other downloading information"
+This tutorial involve multiple downloads using aws cli (https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-welcome.html) which is fast and recommended. However, if you don't have access to aws account and cli, the downloads can be achieved with more standard tools, e.g. wget, through http addresses. Details could be found in the section of "Other downloading information"
 
 ### Step 1: clone GT-Pro repo to your favorite location and change current directory to it
 
