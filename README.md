@@ -56,6 +56,9 @@ gt-pro requires C++ compiler to work properly. The compiler should be compatible
 
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./`  
 
+<b>Alternatively, these files can be retrieved with more standard tools, e.g. wget, through http addresses, if you don't have access to aws accounts and tools</b>
+<b>Please see the section of "Other downloading information" for details</b>
+
 ### Quick usage:  
 
 #### create an optimized version of the database for your machine  
@@ -71,6 +74,10 @@ gt-pro requires C++ compiler to work properly. The compiler should be compatible
 `python3 ./script/gtp_parse.py --dict /path/to/snp_dict.tsv --in </path/to/gt_pro_output> --v2`  
 
 ## Step-by-step Tutorial (for starter):
+
+### downloading notes
+
+This tutorial involve multiple downloads using aws tools which is fast and recommended. However, if you don't have access to aws account and tools, the downloads can be achieved  with more standard tools, e.g. wget, through http addresses. Details could be found in the section of "Other downloading information"
 
 ### Step 1: clone GT-Pro repo to your favorite location and change current directory to it
 
