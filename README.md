@@ -134,9 +134,13 @@ First, you may need to dowload the parsing dictionary using the following comman
 
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./`  
 
-Next, use the following the command line for parsing  
+Note that the raw output file could be in compressed format (.gz), so decompress it using the following command if necessary  
 
-`python3 ./scripts/gtp_parse.py --dict variants_main.covered.hq.snp_dict.tsv --in /path/to/gt_pro_raw_output --v2`  
+`gunzip ./path/to/gt_pro_raw_output`  
+
+Next, parse the uncompressed output file with the following command   
+
+`python3 ./scripts/gtp_parse.py --dict variants_main.covered.hq.snp_dict.tsv --in /path/to/gt_pro_uncompressed_output --v2`  
 
 gtp_parse.py is a parser written in Python script, please see its helper text for more detailed usage.  
 
