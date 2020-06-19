@@ -89,7 +89,7 @@ For more flags and advanced usage, simply type in
  
 ### Step-by-step example: A Mini test case:
 
-If not sure where to start, we suggest using a simple walk-through of [this mini test case] (ExampleTutorial.md) from the beginning to end to get familiar with GT-Pro.  
+If not sure where to start, we suggest using a simple walk-through of [this mini test case](ExampleTutorial.md) from the beginning to end to get familiar with GT-Pro.  
 
 ### Other downloading information
 
