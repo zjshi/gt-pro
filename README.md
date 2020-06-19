@@ -46,16 +46,12 @@ gt-pro requires C++ compiler to work properly. The compiler should be compatible
 ### Download using wget
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_snps.bin`  
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/species_taxonomy_ext.tsv`  
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/variants_main.covered.hq.snp_dict.tsv`  
 
 ### Alternatively, download using aws tools (faster)
 `aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_kmer_index.bin ./`  
 `aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_snps.bin ./`  
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./` 
-`aws s3 cp s3://jason.shi-bucket/public/species_taxonomy_ext.tsv`  
-
-These downloads currently add up to 13GB and represent the compressed database of 56 million common, bi-allelic gut microbiome SNPs. 
 
 ### Finally, create an optimized version of the database for your machine  
 
@@ -90,17 +86,20 @@ For more flags and advanced usage, simply type in
 
 `python3 ./script/gtp_parse.py --dict /path/to/snp_dict.tsv --in </path/to/gt_pro_output> --v2`  
 
-
  
-### Example: A Mini test case:
+### Step-by-step example: A Mini test case:
 
-To verify GT-Pro is ready to run, simply try the following command lines
+If not sure where to start, we suggest using a simple walk-through of [this mini test case] (ExampleTutorial.md) from the beginning to end to get familiar with GT-Pro.  
 
-`./gt_pro -d ./20190723_881species -C test/ SRR413665_2.fastq.gz`  
-`gunzip ./SRR413665_2__gtpro__20190723_881species.tsv.gz`  
-`python3 ./scripts/gtp_parse.py --dict variants_main.covered.hq.snp_dict.tsv --in ./SRR413665_2__gtpro__20190723_881species.tsv --v2`  
+### Other downloading information
 
-If everything runs to finishing without error, parsed GT-Pro will be printed to standard output.
+#### species taxonomy metadata
+
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/species_taxonomy_ext.tsv`  
+
+Or  
+
+`aws s3 cp s3://jason.shi-bucket/public/species_taxonomy_ext.tsv`  
 
 ## How to cite
 
