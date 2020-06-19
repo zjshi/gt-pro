@@ -22,8 +22,8 @@ This tutorial involve multiple downloads using aws cli (https://docs.aws.amazon.
 
 <b>Before that make sure (use pwd to find out) you are already in the gt-pro root directory. Change your current directory if necessary. </b>
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_snps.bin`
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
+`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_snps.bin`  
 
 Or (faster but require aws cli)
 
