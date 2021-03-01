@@ -22,7 +22,7 @@ Feel free to skip this section if you are looking for quick usage or examples.
 
 ## Dependencies
 
-* Python3
+* Python3  
 Once compiled sucessfully, GT-Pro does not require many hard dependencies to run. It relies on Python3 for easy access and interface display.
 
 If you have input sequencing data in gzip, bzip2 and lz4 format, the following dependencies are required to help GT-Pro decode these files.
@@ -45,7 +45,7 @@ Type in the command line to compile the source code of GT-Pro
 Type in the command line to make GT-Pro ready to execute
 `chmod 755 GT_Pro`  
 
-The main program (GT_Pro) should be found in the same directory as /path/to/gt-pro/. The GT-Pro can be added to the system path so that the main program can be accessed from anywhere. Reference through full path is also allowed.  
+The main program (`GT_Pro`) should be found in the same directory as `/path/to/gt-pro/`. The GT-Pro can be added to the system path so that the main program can be accessed from anywhere. Reference through full path is also allowed.  
 
 <b>Notes for C++ compiler</b>
 
@@ -63,7 +63,13 @@ Or
 `aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_kmer_index.bin ./`  
 `aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_snps.bin ./`  
 
-Note: downloading using aws tools is usually much faster. Upon the completion, two files can be found `20190723_881species_optimized_db_kmer_index.bin` and `20190723_881species_optimized_db_snps.bin`, which togethers represent the compressed database of species-specific k-mers targeting 56 million common, bi-allelic gut microbiome SNPs. The name of this default database is "20190723_881species".
+Note: 
+
+* Downloading using aws tools is usually much faster. 
+
+* Upon the completion, two files can be found `20190723_881species_optimized_db_kmer_index.bin` and `20190723_881species_optimized_db_snps.bin`, which togethers represent the compressed database of species-specific k-mers targeting 56 million common, bi-allelic gut microbiome SNPs. 
+
+* The name of this default database is "20190723_881species".
 
 ### SNP dictionary for parsing
 
@@ -73,7 +79,7 @@ Or
 
 `aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./` 
 
-### species taxonomy metadata
+### Species taxonomy metadata
 
 `wget http://jason.shi-bucket.s3.amazonaws.com/public/species_taxonomy_ext.tsv`
 
@@ -83,7 +89,7 @@ Or
 
 ## Quick usage:  
 
-### optimize GT-Pro database before metagenotyping  
+### Optimize GT-Pro database before metagenotyping  
 
 `/path/to/GT_Pro optimize -d /path/to/database_name -i /path/to/GT-Pro/test/SRR413665_2.fastq.gz`  
 
@@ -93,7 +99,7 @@ The -i flag specifies the location of a testing input file. Any file in FASTQ fo
 
 Note: we recommend run `/path/to/GT_Pro optimize` in a new environment or before metagenotyping a large number of samples.
 
-### metagenotyping samples/metagenomes 
+### Metagenotyping samples/metagenomes 
 
 `/path/to/GT_Pro genotype -d /path/to/database_name /path/to/1.fastq[.lz4, .gz, .bz2] /path/to/2.fastq[.lz4, .gz, .bz2] ...`  
 
@@ -107,11 +113,11 @@ For more flags and advanced usage, simply type in
 
 or see more use examples below.
 
-### parse GT-Pro raw output  
+### Parsing GT-Pro raw output  
 
 `/path/to/GT_Pro parse --dict /path/to/snp_dict.tsv --in /path/to/GT_Pro/raw/output`  
 
-Note: 
+`/path/to/GT_Pro parse` is a simple utility which converts GT_Pro raw output into a more human-friendly format.
 
 ## Output format
 
@@ -174,39 +180,44 @@ An example of such looks like the following:
 ### The simplest use:
 `GT_Pro genotype -d /path/to/dbname path/to/input.fastq.gz`
 
-Note: By default the output file can be found in your current directory and named to path_to_input__gtpro__dbname.tsv.lz4
+Note: 
 
-A long name like path_to_input__gtpro__dbname.tsv.lz4 is a purposeful design to help avoid accidental file overwriting.
-The file type .tsv.lz4 reveals that the output is in the format of tab-separated values and compressed with lz4 algorithm.
+* By default the output file can be found in your current directory and named to path_to_input__gtpro__dbname.tsv.lz4
 
+* A long name like path_to_input__gtpro__dbname.tsv.lz4 is a purposeful design to help avoid accidental file overwriting.
 
-Question: how to find the dbname?
+* The file type .tsv.lz4 reveals that the output is in the format of tab-separated values and compressed with lz4 algorithm.
+
+Question: how to find the dbname?  
 A: In a directory hosting a GT-Pro database, highly likily in your current directory, you may see two or all of four following files:
-	[dbname]_optimized_db_kmer_index.bin
-    [dbname]_optimized_db_snps.bin
-    [dbname]_optimized_db_lmer_index_xx.bin, xx is a two-digit number, e.g. 30
-    [dbname]_optimized_db_mmer_bloom_yy.bin, yy is also a two-digit number, e.g. 35
+* `[dbname]_optimized_db_kmer_index.bin`
+* `[dbname]_optimized_db_snps.bin`
+* `[dbname]_optimized_db_lmer_index_xx.bin`, xx is a two-digit number, e.g. 30
+* `[dbname]_optimized_db_mmer_bloom_yy.bin`, yy is also a two-digit number, e.g. 35
 dbname is all the characters in the brackets while brakets itself not included.
 
-Question: how many CPUs does GT-Pro use by default?
+Question: how many CPUs does GT-Pro use by default?  
 A: By defauly, GT-Pro automatically detects the number of available CPUs in a computing environment and then uses all of them
 
-Question: why does GT-Pro mentioning 'Skipped x input files due to pre-existing results.'
+Question: why does GT-Pro mentioning 'Skipped x input files due to pre-existing results.'  
 A: GT-Pro automatically detects whether there is a conflict on the location it is about to write an output file. There a conflict exists, GT-Pro will by default cautiously skip output writing. You may have a quick check and manually resolve the confict, or use the -f flag to overwrite pre-existing files.
 
 ### The simplest use + use a certain number of CPUs:
 `GT_Pro genotype -d /path/to/dbname -t 8 path/to/input.fastq.gz`
 
-Note: You may consult this example if you do not want to let GT-Pro use all of CPUs.
+Note:
 
-The flag of -t can be used for designating a maximum number of CPUs GT-Pro uses.
+* You may consult this example if you do not want to let GT-Pro use all of CPUs.
 
-For performance reasons, we recommend never supplying -t with a number more than the total number of CPUs in a computing environment
+* The flag of -t can be used for designating a maximum number of CPUs GT-Pro uses.
+
+* For performance reasons, we recommend never supplying -t with a number more than the total number of CPUs in a computing environment
 
 ### Genotype more than one sample/metagenome:
 `GT_Pro genotype -d /path/to/dbname path/to/input1.fastq.gz path/to/input2.fastq.gz path/to/input3.fastq.gz ...`
 
-Note: by default all the output files can be found in your current directory and each is named similiarly as the single input use.
+Note: 
+* by default all the output files can be found in your current directory and each is named similiarly as the single input use.
 
 ### Genotype more than one sample/metagenome with mixed file types (e.g. .gz, .lz4, .bz2):
 `GT_Pro genotype -d /path/to/dbname path/to/input1.fastq.gz path/to/input2.fastq.lz4 path/to/input3.fq.bz2 ...`
@@ -216,7 +227,9 @@ Note: by default all the output files can be found in your current directory and
 
 ### Genotype more than one sample/metagenome in the same directory:
 `GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory test576/r1.fastq.lz4 test576/r2.fq.bz2`
-Note: you might want to use -C to avoid super long commandline
+
+Note: 
+* you might want to use -C to avoid super long commandline
 
 ### Genotype a lot of samples with the same file type (e.g. gzipped fastq) in the same directory:
 `GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory *.fastq.gz`
@@ -226,37 +239,45 @@ Note: you might want to use -C to avoid super long commandline
 
 ### Genotype everything in one directory:
 `GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory *`
-Note: you might want to make sure all files in the directory are compatible with GT-Pro
+
+Note: 
+* you might want to make sure all files in the directory are compatible with GT-Pro
 
 ### Designate an full output path for a sample/metagenome :
 `GT_Pro genotype -d /path/to/dbname -o /path/to/output/name path/to/input.fastq.gz`
-Note: Please consult this example if you dislike the default way how GT-Pro writes an output file. In the example, the output can be found at /path/to/output/name.tsv.lz4
+
+Note: 
+* Please consult this example if you dislike the default way how GT-Pro writes an output file. In the example, the output can be found at /path/to/output/name.tsv.lz4
 
 ### Designate a different output directory than the current directory for a sample/metagenome :
 `GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/%{in}__gtpro__%{db} path/to/input.fastq.gz`
 
-Note: Suppose that you are fine the way how GT-Pro names an output file but want to keep the current directory clean. In this example, the output can be found at in the designated output directory with a file name like path_to_input__gtpro__dbname.tsv.lz4
+Note: 
 
-You may also realized that the example of the simplest use is equivalent as `GT_Pro genotype -d /path/to/dbname -o ./%{in}__gtpro__%{db} path/to/input.fastq.gz`
+* Suppose that you are fine the way how GT-Pro names an output file but want to keep the current directory clean. In this example, the output can be found at in the designated output directory with a file name like path_to_input__gtpro__dbname.tsv.lz4
+
+* You may also realized that the example of the simplest use is equivalent as `GT_Pro genotype -d /path/to/dbname -o ./%{in}__gtpro__%{db} path/to/input.fastq.gz`
 
 ### Designate a different output directory than the current directory when genotyping more than one sample/metagenome :
 `GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/%{in}__gtpro__%{db} path/to/input1.fastq.gz path/to/input2.fastq.gz path/to/input3.fastq.gz`
     
-Note: This is similiar as designating different output directory for a single input.
+Note: 
 
-The output files can be found at in the designated output directory, with names like path_to_input1__gtpro__dbname.tsv.lz4, path_to_input2__gtpro__dbname.tsv.lz4 and path_to_input3__gtpro__dbname.tsv.lz4
+* This is similiar as designating different output directory for a single input.
+
+* The output files can be found at in the designated output directory, with names like path_to_input1__gtpro__dbname.tsv.lz4, path_to_input2__gtpro__dbname.tsv.lz4 and path_to_input3__gtpro__dbname.tsv.lz4
 
 ## Build customized database
 
 ### Additional dependencies
 
-* KMC3
+* KMC3  
 KMC3 and its installation guidelines can be found at [here](https://github.com/refresh-bio/KMC)
 
-* [Biopython](https://biopython.org/)
+* [Biopython](https://biopython.org/)  
 May be installed with `pip install biopython`  
 
-* [Numpy](https://numpy.org/)
+* [Numpy](https://numpy.org/)  
 May be installed with `pip install numpy`
 
 ### Building usage 
