@@ -1,0 +1,58 @@
+#!/bin/bash
+
+Help()
+{
+   me=`basename "$0"`
+
+   # Display Help
+   echo "GT-Pro - the GenoTyper for PROkaryotes"
+   echo "This program utilizes an exact matching algorithm to perform ultra-rapid and accurate genotyping of known SNPs from metagenomes."
+   echo
+   echo "For copyright and licensing information, please see"
+   echo "https://github.com/zjshi/gt-pro/blob/master/LICENSE"
+   echo
+   echo "Syntax: $me [build|optimize|genotype|parse|-v|-h]"
+   echo "options:"
+   echo "  build              Build a GT-Pro database."
+   echo "  optimize           Optimize a GT-Pro database before running."
+   echo "  genotype           Run the main program of GT-Pro and detect genotypes from metagenomes."
+   echo "  parse              Parse raw GT-Pro output into a more friendly format"
+   echo "  -v [--version]     Print software version and exit."
+   echo "  -h [--help]        Print this help."
+   echo
+   echo "If you find GT-Pro helpful, please consider citing our Biorxiv paper for now: Zhou Jason Shi, Boris Dimitrov, Chunyu Zhao, Stephen Nayfach, Katherine S. Pollard; "Ultra-rapid metagenotyping of the human gut microbiome"; bioRxiv 2020.06.12.149336; doi: https://doi.org/10.1101/2020.06.12.149336"
+   echo
+}
+
+Version()
+{
+   # Display version 
+   echo "GT-Pro version 1.0.1"
+}
+
+
+REALME=`realpath $0`
+GTPRO=`dirname ${REALME}`
+EBSROOT=`dirname ${GTPRO}`
+export PATH=$PATH:${GTPRO}/bin/
+
+if [ "$1" = "build" ]; then
+	shift
+	python3 ${GTPRO}/scripts/build_db.py $*
+elif [ "$1" = "optimize" ]; then
+	shift
+	python3 ${GTPRO}/scripts/optimize.py $*
+elif [ "$1" = "genotype" ]; then
+	shift
+	gt_pro $*
+elif [ "$1" = "parse" ]; then
+	shift
+	python3 ${GTPRO}/scripts/gtp_parse.py $*
+elif [ "$1" = "-v" ] || [ "$1" = "--version" ] || [ "$1" = "version" ] || [ "$1" = "-version" ]; then
+	Version	
+elif [ "$1" = "-h" ] || [ "$1" = "-help" ] || [ "$1" = "help" ] || [ "$1" = "--help" ]; then
+	Help
+else
+	Help
+fi
+

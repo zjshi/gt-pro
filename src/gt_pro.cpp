@@ -295,11 +295,9 @@ int decompressor(const char *inpath) {
       if (0 == strcmp(comp[2], "untested")) {
         comp[2] = test_compressor(comp[1]) ? "tested_and_works" : "tested_and_does_not_work";
       }
-      if (required == -1) { // remember just the first one as it's preferred
+      if (required == -1 && 0 == strcmp(comp[2], "tested_and_works")) { // remember just the first one as it's preferred
         required = i;
-      }
-      if (0 == strcmp(comp[2], "tested_and_works")) {
-        return required;
+		return required;
       }
     }
     ++i;
@@ -891,7 +889,7 @@ struct Result {
   }
   void open_input() {
     assert(errno == 0);
-    if (decomp_idx == -1) { // no decomprefssion required
+    if (decomp_idx == -1) { // no decompression required
       popened = false;
       input_file = fopen(in_path.c_str(), "r");
     } else {
@@ -1365,7 +1363,7 @@ bool kmer_lookup(LmerRange *lmer_index, uint64_t *mmer_bloom, uint32_t *kmers_in
 }
 
 void display_usage(char *fname) {
-  cerr << "GTPro version 1.0.0\n"
+  cerr << "GT-Pro version 1.0.1\n"
        << "For copyright and licensing information, please see\n"
        << "https://github.com/zjshi/gt-pro/blob/master/LICENSE\n"
        << "\n"
@@ -1388,29 +1386,107 @@ void display_usage(char *fname) {
        << "  when no inputs are specified, gt_pro consumes fastq input from stdin\n"
        << "  until stdin reaches EOF, then emits all output to stdout at once\n"
        << "\n"
-       << "  in the optional -o output prefix, %{db} expands to the DB name,\n"
-       << "  %{in} expands to the corresponding input base name, and %{n} expands\n"
-       << "  to the corresponding input number 0, 1, 2, ..., if input != stdin\n"
-       << "\n"
-       << "  -f causes any pre-existing output files to be overwritten\n"
+       << "  GT_Pro will refuse to work if pre-existing output files are detected.\n"
+       << "  Consider using -f when any pre-existing output files should be overwritten\n"
        << "\n"
        << "USAGE EXAMPLES\n"
        << "\n"
-       << "  The following two methods of running gtpro produce equivalent results.\n"
+       << "  Here are a few quick examples on how to use GT-Pro, which should cover most of it regular uses\n"
        << "\n"
-       << "  Method 1:\n"
-       << "    gt_pro -d /path/to/db1234 -C /path/to/input test576/r1.fastq.lz4 test576/r2.fq.bz2\n"
+       << "  The simplest use:\n"
+       << "    GT_Pro genotype -d /path/to/dbname path/to/input.fastq.gz\n"
+       << "    Note: " 
+	   << "    By default the output file can be found in your current directory and named to path_to_input__gtpro__dbname.tsv.lz4\n"
+       << "    A long name like path_to_input__gtpro__dbname.tsv.lz4 is a purposeful design to help avoid accidental file overwriting.\n"
+       << "    The file type .tsv.lz4 reveals that the output is in the format of tab-separated values and compressed with lz4 algorithm.\n"
        << "\n"
-       << "  Method 2:\n"
-       << "    lz4 -dc /path/to/input/test576/r1.fastq.lz4 | gt_pro -d /path/to/db123 | lz4 -c > test576_r1__gtpro__db1234.tsv.lz4\n"
-       << "    lbzip2 -dc /path/to/input/test576/r2.fq.bz2 | gt_pro -d /path/to/db123 | lbzip2 -c > "
+       << "    Question: how to find the dbname?\n"
+       << "    A: In a directory hosting a GT-Pro database, highly likily in your current directory, you may see two or all of four following files:\n"
+       << "       [dbname]_optimized_db_kmer_index.bin\n"
+       << "       [dbname]_optimized_db_snps.bin\n"
+       << "       [dbname]_optimized_db_lmer_index_xx.bin, xx is a two-digit number, e.g. 30\n"
+       << "       [dbname]_optimized_db_mmer_bloom_yy.bin, yy is also a two-digit number, e.g. 35\n"
+       << "    dbname is all the characters in the brackets while brakets itself not included.\n"
+       << "\n"
+       << "    Question: how many CPUs does GT-Pro use by default?\n"
+       << "    A: By defauly, GT-Pro automatically detects the number of available CPUs in a computing environment and then uses all of them\n"
+       << "\n"
+       << "    Question: why does GT-Pro mentioning 'Skipped x input files due to pre-existing results.'\n"
+       << "    A: GT-Pro automatically detects whether there is a conflict on the location it is about to write an output file. There a conflict exists, GT-Pro will by default cautiously skip output writing. You may have a quick check and manually resolve the confict, or use the -f flag to overwrite pre-existing files.\n"
+       << "\n"
+       << "  The simplest use + use a certain number of CPUs:\n"
+       << "    GT_Pro genotype -d /path/to/dbname -t 8 path/to/input.fastq.gz\n"
+       << "    Note: You may consult this example if you do not want to let GT-Pro use all of CPUs.\n"
+	   << "    The flag of -t can be used for designating a maximum number of CPUs GT-Pro uses.\n" 
+	   << "    For performance reasons, we recommend never supplying -t with a number more than the total number of CPUs in a computing environment\n" 
+       << "\n"
+       << "  Genotype more than one sample/metagenome:\n"
+       << "    GT_Pro genotype -d /path/to/dbname path/to/input1.fastq.gz path/to/input2.fastq.gz path/to/input3.fastq.gz ...\n"
+       << "    Note: by default all the output files can be found in your current directory and each is named similiarly as the single input use.\n"
+       << "\n"
+       << "  Genotype more than one sample/metagenome with mixed file types (e.g. .gz, .lz4, .bz2):\n"
+       << "    GT_Pro genotype -d /path/to/dbname path/to/input1.fastq.gz path/to/input2.fastq.lz4 path/to/input3.fq.bz2 ...\n"
+       << "\n"
+       << "  GT_Pro does not care if input files are mixed with the compressed or uncompressed as long as they are in FASTQ format:\n"
+       << "    GT_Pro genotype -d /path/to/dbname path/to/input1.fastq.gz path/to/input2.fastq path/to/input3.fq ...\n"
+       << "\n"
+       << "  Genotype more than one sample/metagenome in the same directory:\n"
+       << "    GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory test576/r1.fastq.lz4 test576/r2.fq.bz2\n"
+       << "    Note: you might want to use -C to avoid super long commandline\n"
+       << "\n"
+       << "  Genotype a lot of samples with the same file type (e.g. gzipped fastq) in the same directory:\n"
+       << "    GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory *.fastq.gz\n"
+       << "\n"
+       << "  Genotype a lot of samples with mixed file type (e.g. .gz, .lz4, .bz2) in the same directory:\n"
+       << "    GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory *.fastq.gz *.fastq.bz2 *.fq.lz4\n"
+       << "\n"
+       << "  Genotype everything in one directory:\n"
+       << "    GT_Pro genotype -d /path/to/dbname -C /path/to/input/directory *\n"
+       << "    Note: you might want to make sure all files in the directory are compatible with GT-Pro\n"
+       << "\n"
+       << "  Designate an full output path for a sample/metagenome :\n"
+       << "    GT_Pro genotype -d /path/to/dbname -o /path/to/output/name path/to/input.fastq.gz\n"
+       << "    Note: Please consult this example if you dislike the default way how GT-Pro writes an output file. In the example, the output can be found at /path/to/output/name.tsv.lz4\n"
+       << "\n"
+       << "  Designate a different output directory than the current directory for a sample/metagenome :\n"
+       << "    GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/%{in}__gtpro__%{db} path/to/input.fastq.gz\n"
+       << "    Note: Suppose that you are fine the way how GT-Pro names an output file but want to keep the current directory clean. In this example, the output can be found at in the designated output directory with a file name like path_to_input__gtpro__dbname.tsv.lz4\n"
+	   << "    You may also realized that the example of the simplest use is equivalent as `GT_Pro genotype -d /path/to/dbname -o ./%{in}__gtpro__%{db} path/to/input.fastq.gz`\n"
+       << "\n"
+       << "  Designate a different output directory than the current directory when genotyping more than one sample/metagenome :\n"
+       << "    GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/%{in}__gtpro__%{db} path/to/input1.fastq.gz "
+	   << "path/to/input2.fastq.gz path/to/input3.fastq.gz\n"
+       << "    Note: This is similiar as designating different output directory for a single input.\n"
+	   << "    The output files can be found at in the designated output directory, with names like path_to_input1__gtpro__dbname.tsv.lz4, path_to_input2__gtpro__dbname.tsv.lz4 and path_to_input3__gtpro__dbname.tsv.lz4\n"
+       << "\n"
+       << "ADVANCED USAGE\n"
+       << "\n"
+       << "  Here are several examples of using GT-Pro in more than regular ways if you are an advanced user\n"
+       << "\n"
+       << "  Genotype a sample/metagenome from stdin:\n"
+       << "    lz4 -dc /path/to/input/test576/r1.fastq.lz4 | GT_Pro genotype -d /path/to/db123 | lz4 -c > test576_r1__gtpro__db1234.tsv.lz4\n"
+       << "    lbzip2 -dc /path/to/input/test576/r2.fq.bz2 | GT_Pro genotype -d /path/to/db123 | lbzip2 -c > "
           "test576_r2__gtpro__db1234.tsv.bz2\n"
        << "\n"
-       << "  The primary difference is in performance and error handling.  Method 1 will create an\n"
-       << "  .err file for any input that fails, and will better utilize all available CPU cores.\n"
+       << "  Designate a sophisticated output naming pattern when genotyping a larget number of samples/metagenomes:\n"
+       << "    GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/%{in} path/to/input1.fastq.gz "
+	   << "path/to/input2.fastq.gz path/to/input3.fastq.gz\n"
+       << "    Note: naming output files with input path only\n"
        << "\n"
-       << "  To obtain simple sequential output names like out.0.tsv, out.1.tsv, ...\n"
-       << "  with forced overwriting of existing outputs, use arguments -f -o out.%{n}\n";
+       << "    GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/out_%{n} path/to/input1.fastq.gz "
+	   << "path/to/input2.fastq.gz path/to/input3.fastq.gz\n"
+       << "    Note: naming output files with a prefix and a numerical label starting from 0, then 1, 2, ...\n"
+       << "\n"
+       << "    GT_Pro genotype -d /path/to/dbname -o /path/to/output/directory/%{db}_%{n} path/to/input1.fastq.gz "
+	   << "path/to/input2.fastq.gz path/to/input3.fastq.gz\n"
+       << "    Note: naming output files with a database name, a underscore symbol and a numerical label\n"
+       << "\n"
+       << "  Use a different L or M than the optimized values\n"
+       << "    GT_Pro genotype -d /path/to/dbname -l 31 -m 36 path/to/input.fastq.gz\n"
+       << "    Note: -l and -m can be used to specify the size of L-index and M-filter, which are two important data structures affecting the performance of GT-Pro\n"
+       << "    Please consult the paper for more design details about these two data structures.\n"
+       << "\n"
+       << endl;
 }
 
 template <class ElementType> struct DBIndex {
@@ -1540,7 +1616,7 @@ int main(int argc, char **argv) {
   // in the same folder (for inputs that are folder-structured).
   char *oname = (char *)"%{in}__gtpro__%{db}";
 
-  // Number of bits in the prefix part of the K-mer (also called L-mer,
+  // Number of bits in the prefix part of the K-mer (also called L-index,
   // even though it might not correspond to an exact number of bases).
   // Override with command line -l parameter.
   //
@@ -1549,7 +1625,7 @@ int main(int argc, char **argv) {
   // to reduce RAM use and eliminate I/O which is even worse for perf.
   auto L2 = 29;
 
-  // Number of bits in the MMER_BLOOM index.  This has a substantial effect
+  // Number of bits in the M-filter.  This has a substantial effect
   // on memory use.  Rule of thumb for perf is M3 >= 4 + log2(DB cardinality).
   // Override with command line -m parameter.
   auto M3 = 35;

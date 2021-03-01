@@ -8,3 +8,6 @@
 *.log
 *.toc
 *.aux
+
+**/__pycache__
+bin/**
