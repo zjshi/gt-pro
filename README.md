@@ -199,7 +199,8 @@ A: In a directory hosting a GT-Pro database, highly likily in your current direc
 * `[dbname]_optimized_db_kmer_index.bin`
 * `[dbname]_optimized_db_snps.bin`
 * `[dbname]_optimized_db_lmer_index_xx.bin`, xx is a two-digit number, e.g. 30
-* `[dbname]_optimized_db_mmer_bloom_yy.bin`, yy is also a two-digit number, e.g. 35  
+* `[dbname]_optimized_db_mmer_bloom_yy.bin`, yy is also a two-digit number, e.g. 35
+
 dbname is all the characters in the brackets while brakets itself not included.
 
 Question: how many CPUs does GT-Pro use by default?  
