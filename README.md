@@ -12,7 +12,7 @@ We built a database of common SNPs within the core genomes of species that are p
 
 GT-Pro utilizes an exact matching algorithm to perform ultra-rapid and accurate genotyping of known SNPs from metagenomes.
 
-To genotype a microbiome, GT-Pro takes as input one or more shotgun metagenomics sequencing libraries in FASTQ format. It returns counts of reads exactly matching each allele of each SNP in a concise table-shaped format for its output, with one row for each bi-allelic SNP site that has exactly 8 fields: species, SNP ID, contig, contig position, allele 1, allele 2 and coverage of allele 1 and coverage of allele 2. The k-mer exact match based genotyping algorithm is optimized for machine specificiations, and it can run on a personal computer.
+To genotype a microbiome, GT-Pro takes as input one or more shotgun metagenomics sequencing libraries in FASTQ format. It returns counts of reads exactly matching each allele of each SNP in a concise table-shaped format for its output, with one row for each bi-allelic SNP site that has exactly 8 fields: species, global position, contig, contig position, allele 1, allele 2 and coverage of allele 1 and coverage of allele 2. The k-mer exact match based genotyping algorithm is optimized for machine specificiations, and it can run on a personal computer.
 
 ## Step-by-step tutorial
 
@@ -23,12 +23,14 @@ Feel free to skip this section if you are looking for quick usage or examples.
 ## Dependencies
 
 * Python3  
-Once compiled sucessfully, GT-Pro does not require many hard dependencies to run. It relies on Python3 for easy access and interface display.
+* pigz (Optional; A parallel implementation of gzip for modern multi-processor, multi-core machines; https://zlib.net/pigz/)
+* lbzip2 (Optional; A free, multi-threaded compression utility with support for bzip2 compressed file format; http://lbzip2.org/)
+* lz4 (Optional; Extremely Fast Compression algorithm; http://www.lz4.org)
 
-If you have input sequencing data in gzip, bzip2 and lz4 format, the following dependencies are required to help GT-Pro decode these files.
-* pigz (A parallel implementation of gzip for modern multi-processor, multi-core machines; https://zlib.net/pigz/)
-* lbzip2 (A free, multi-threaded compression utility with support for bzip2 compressed file format; http://lbzip2.org/)
-* lz4 (Extremely Fast Compression algorithm; http://www.lz4.org)
+Note:
+
+* Once compiled sucessfully, GT-Pro relies on Python3 for easy access and interface display.
+* If you have input sequencing data in gzip, bzip2 and lz4 format, pigz, lbzip2 and lz4 are required to help GT-Pro better decode these files. GT-Pro will fall back to system default decompressor (e.g. gzip) if these depedencies not detected.
 
 ## Installation
 
@@ -42,7 +44,7 @@ Change your current working directory into where you put GT-Pro
 Type in the command line to compile the source code of GT-Pro  
 `make`  
 
-Type in the command line to make GT-Pro ready to execute
+Type in the command line to make GT-Pro ready to execute  
 `chmod 755 GT_Pro`  
 
 The main program (`GT_Pro`) should be found in the same directory as `/path/to/gt-pro/`. The GT-Pro can be added to the system path so that the main program can be accessed from anywhere. Reference through full path is also allowed.  
@@ -109,9 +111,13 @@ Here -d flag again specifies a complete path to the prefix of database, which is
   
 For more flags and advanced usage, simply type in  
 
-`/path/to/GT_Pro genotype or /path/to/GT_Pro genotype -h`
+`/path/to/GT_Pro genotype`   
 
-or see more use examples below.
+or 
+
+`/path/to/GT_Pro genotype -h`
+
+See more use examples below.
 
 ### Parsing GT-Pro raw output  
 
@@ -157,14 +163,14 @@ It has eight fields as the following:
 2. Global Pos: up to seven digits which specifies the global position of a SNP in a species
 3. Contig: string type with arbitary length which specifies the contig of a representative genome where a SNP is from
 4. Local Pos: up to seven digits which specifies the local position of a SNP on a contig
-5. Ref allele: single character, A, C, G or T, which specifies reference allele of a SNP
-6. Alt allele: similiar as Ref allele but specifies alternative allele of a SNP
-7. Ref allele Cnt: an integer specifying the count of detected Ref allele in a metagenome
-8. Alt Allele Cnt: an integer specifying the count of detected Alt allele in a metagenome
+5. Allele 1: single character, A, C, G or T, which specifies allele 1 of a SNP
+6. Allele 2: similiar as Ref allele but specifies allele 2 of a SNP
+7. Allele 1 Cnt: an integer specifying the count of detected allele 1 in a metagenome
+8. Allele 2 Cnt: an integer specifying the count of detected allele 2 in a metagenome
 
 An example of such looks like the following:
 
-| Species ID       | Global Pos    | Contig         | Local Pos      | Ref Allele     | Alt Allele     | Ref Allele Cnt | Alt Allele Cnt |
+| Species ID       | Global Pos    | Contig         | Local Pos      | Allele 1       | Allele 2       | Allele 1 Cnt   | Allele 2 Cnt   |
 | :---             |    :----:     |    :----:      |     :----:     |    :----:      |    :----:      |    :----:      |    :----:      |
 | 100099           | 349759        | Ga0310508_101  | 349759         | C              | T              | 7              | 0              |
 | 100099           | 472876        | Ga0310508_102  | 20713          | C              | T              | 8              | 0              |
@@ -193,7 +199,7 @@ A: In a directory hosting a GT-Pro database, highly likily in your current direc
 * `[dbname]_optimized_db_kmer_index.bin`
 * `[dbname]_optimized_db_snps.bin`
 * `[dbname]_optimized_db_lmer_index_xx.bin`, xx is a two-digit number, e.g. 30
-* `[dbname]_optimized_db_mmer_bloom_yy.bin`, yy is also a two-digit number, e.g. 35
+* `[dbname]_optimized_db_mmer_bloom_yy.bin`, yy is also a two-digit number, e.g. 35  
 dbname is all the characters in the brackets while brakets itself not included.
 
 Question: how many CPUs does GT-Pro use by default?  
@@ -284,6 +290,10 @@ May be installed with `pip install numpy`
 
 GT-Pro also allows users to build their own database using the `build` subcommand. An example can be found as the following:
 
+* extract test species directories as inputs  
+`tar xzvf test/100035.tar.gz && tar xzvf test/101747.tar.gz && tar xzvf test/102779.tar.gz`
+
+* build a three-species GT-Pro database   
 `./GT_Pro build --in test/build.list --out ./test/my_db --dbname tri_db --threads 4`
 
 The database building of GT-Pro has a simple interface, which only requires a input file (specified by --in) containing a list of species directories and a output directory (specified by --out) for hosting intermediate and end files related to database building.
