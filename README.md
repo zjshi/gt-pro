@@ -57,17 +57,10 @@ GT-Pro requires a C++ compiler that is compatible with C++ 11 standards to work 
 
 ### Main species-specific k-mer database
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_snps.bin`  
-
-Or
-
-`aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_kmer_index.bin ./`  
-`aws s3 cp s3://microbiome-bdimitrov/gt-pro2.0/databases/20190723_881species/20190723_881species_optimized_db_snps.bin ./`  
+`wget --content-disposition https://fileshare.czbiohub.org/s/daK4Wj3N7EwSSrd/download`  
+`wget --content-disposition https://fileshare.czbiohub.org/s/XNCzWziB4JydWFH/download`  
 
 Note: 
-
-* Downloading using aws tools is usually much faster. 
 
 * Upon the completion, two files can be found `20190723_881species_optimized_db_kmer_index.bin` and `20190723_881species_optimized_db_snps.bin`, which togethers represent the compressed database of species-specific k-mers targeting 56 million common, bi-allelic gut microbiome SNPs. 
 
@@ -75,19 +68,19 @@ Note:
 
 ### SNP dictionary for parsing
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/variants_main.covered.hq.snp_dict.tsv`  
+`wget --content-disposition https://fileshare.czbiohub.org/s/cYDwCAB539kE5yt/download`  
 
-Or
+Note:  
 
-`aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./` 
+* Upon the completion, one file named "variants_main.covered.hq.snp_dict.tsv" can be found in your current directory.
 
 ### Species taxonomy metadata
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/species_taxonomy_ext.tsv`
+`wget --content-disposition https://fileshare.czbiohub.org/s/XBzwFpfJpmJpBSQ/download`
 
-Or
+Note:  
 
-`aws s3 cp s3://jason.shi-bucket/public/species_taxonomy_ext.tsv`
+* Upon the completion, one file named "species_taxonomy_ext.tsv" can be found in your current directory.
 
 ## Quick usage:  
 

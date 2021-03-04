@@ -20,19 +20,12 @@ This tutorial involve multiple downloads using aws cli (https://docs.aws.amazon.
 
 Upon the successful completion of the steps above, a main program GT_Pro can be found in the current directory.
 
-Feel free to add /path/to/gt-pro to your system path so that GT_Pro can be reference from any location, but this is not required. GT-Pro can be used normally by referencing its main program GT_Pro by full path.
+Feel free to add /path/to/gt-pro to your system path so that GT_Pro can be reference from any location, but this is not required. GT-Pro can be used normally by referencing its main program GT_Pro by full ## Step 2: download raw material. The raw material consists of two binary files stored in a AWS S3 bucket and can be downloaded with the following command
 
-## Step 2: download raw material. The raw material consists of two binary files stored in a AWS S3 bucket and can be downloaded with the following command
+## Step 2: download raw material. The raw material consists of two binary files stored in a nextcloud location and can be downloaded with the following command
 
-<b>Before that make sure (use pwd to find out) you are already in the gt-pro root directory. Change your current directory if necessary. </b>
-
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_kmer_index.bin`  
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/20190723_881species_optimized_db_snps.bin`  
-
-Or (faster but require aws cli)
-
-`aws s3 cp s3://jason.shi-bucket/public/20190723_881species_optimized_db_kmer_index.bin ./`  
-`aws s3 cp s3://jason.shi-bucket/public/20190723_881species_optimized_db_snps.bin ./`  
+`wget --content-disposition https://fileshare.czbiohub.org/s/daK4Wj3N7EwSSrd/download`  
+`wget --content-disposition https://fileshare.czbiohub.org/s/XNCzWziB4JydWFH/download`  
 
 This will emit the following files to the same directory  
 
@@ -100,21 +93,13 @@ We note the raw output file itself is ready for further analysis involving genot
 
 can be retrieved using 
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/species_taxonomy_ext.tsv` 
-
-Or
-
-`aws s3 cp s3://jason.shi-bucket/public/species_taxonomy_ext.tsv`
+`wget --content-disposition https://fileshare.czbiohub.org/s/XBzwFpfJpmJpBSQ/download` 
 
 2. SNP dictionary (variants_main.covered.hq.snp_dict.tsv)
 
 can be retrieved using
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/variants_main.covered.hq.snp_dict.tsv`
-
-Or
-
-`aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./`
+`wget --content-disposition https://fileshare.czbiohub.org/s/cYDwCAB539kE5yt/download`
 
 ## Step 5: (Optional) GT-Pro raw output is encoded, we provide a small utility to parse the raw output  
 
@@ -122,11 +107,7 @@ First, you may have already dowloaded the parsing dictionary (variants_main.cove
 
 If not, it can be retrieved using the following command line  
 
-`wget http://jason.shi-bucket.s3.amazonaws.com/public/variants_main.covered.hq.snp_dict.tsv`
-
-Or (faster)
-
-`aws s3 cp s3://jason.shi-bucket/public/variants_main.covered.hq.snp_dict.tsv ./`  
+`wget --content-disposition https://fileshare.czbiohub.org/s/cYDwCAB539kE5yt/download`
 
 Note that the raw output file could be in compressed format (.gz) by default, so decompress it using the following command if necessary  
 
