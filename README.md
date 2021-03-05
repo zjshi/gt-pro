@@ -12,7 +12,11 @@ We built a database of common SNPs within the core genomes of species that are p
 
 GT-Pro utilizes an exact matching algorithm to perform ultra-rapid and accurate genotyping of known SNPs from metagenomes.
 
-To genotype a microbiome, GT-Pro takes as input one or more shotgun metagenomics sequencing libraries in FASTQ format. It returns counts of reads exactly matching each allele of each SNP in a concise table-shaped format for its output, with one row for each bi-allelic SNP site that has exactly 8 fields: species, global position, contig, contig position, allele 1, allele 2 and coverage of allele 1 and coverage of allele 2. The k-mer exact match based genotyping algorithm is optimized for machine specificiations, and it can run on a personal computer.
+To genotype a microbiome, GT-Pro takes as input one or more shotgun metagenomics sequencing libraries in FASTQ format. It returns counts of reads exactly matching each allele of each SNP in a concise table-shaped format for its output, with one row for each bi-allelic SNP site that has exactly 8 fields: species, global position, contig, contig position, allele 1, allele 2, coverage of allele 1 and coverage of allele 2. The k-mer exact match based genotyping algorithm is optimized for machine specificiations, and it can run on a personal computer.
+
+## How to cite
+
+If you find GT-Pro helpful, please consider citing our Biorxiv paper for now: Zhou Jason Shi, Boris Dimitrov, Chunyu Zhao, Stephen Nayfach, Katherine S. Pollard; "Ultra-rapid metagenotyping of the human gut microbiome"; bioRxiv 2020.06.12.149336; doi: https://doi.org/10.1101/2020.06.12.149336
 
 ## Step-by-step tutorial
 
@@ -62,7 +66,7 @@ GT-Pro requires a C++ compiler that is compatible with C++ 11 standards to work 
 
 Note: 
 
-* Upon the completion, two files can be found `20190723_881species_optimized_db_kmer_index.bin` and `20190723_881species_optimized_db_snps.bin`, which togethers represent the compressed database of species-specific k-mers targeting 56 million common, bi-allelic gut microbiome SNPs. 
+* Upon the completion, two files can be found `20190723_881species_optimized_db_kmer_index.bin` and `20190723_881species_optimized_db_snps.bin`, which together represent the compressed database of species-specific k-mers targeting 56 million common, bi-allelic gut microbiome SNPs. 
 
 * The name of this default database is "20190723_881species".
 
@@ -122,7 +126,7 @@ See more use examples below.
 
 ### GT-Pro raw output
 
-The GT_Pro raw output file is text-based and in the format of "tab-separated values" (tsv), which may be viewed using a text editor.
+The GT_Pro raw output file is text-based and in the format of "tab-separated values" (tsv), which may be viewed using a text editor or a spreadsheet program.
 
 It has two fields, including an encoded genotype field and a genotype count field. An example of such looks like the following:
 
@@ -148,7 +152,7 @@ see the section of "Dowloading default database" about how to retrieve them.
 
 ### GT-Pro parsed output
 
-The GT_Pro parsed output file is also text-based and in the format of "tab-separated values" (tsv), which may be viewed using a text editor.
+The GT_Pro parsed output file is also text-based and in the format of "tab-separated values" (tsv), which may be viewed using a text editor or a spreadsheet program.
 
 It has eight fields as the following:
 
@@ -272,7 +276,7 @@ Note:
 ### Additional dependencies
 
 * KMC3  
-KMC3 and its installation guidelines can be found at [here](https://github.com/refresh-bio/KMC)
+KMC3 and its installation guidelines can be found [here](https://github.com/refresh-bio/KMC)
 
 * [Biopython](https://biopython.org/)  
 May be installed with `pip install biopython`  
@@ -315,6 +319,3 @@ Note: building a database for a large number of species may consume a lot of com
 
 GT-Pro chooses a default k=31 and both database building and metagenotyping code is heavily optimized over this choice. It does not take other k for database building.
 
-## How to cite
-
-If you find GT-Pro helpful, please consider citing our Biorxiv paper for now: Zhou Jason Shi, Boris Dimitrov, Chunyu Zhao, Stephen Nayfach, Katherine S. Pollard; "Ultra-rapid metagenotyping of the human gut microbiome"; bioRxiv 2020.06.12.149336; doi: https://doi.org/10.1101/2020.06.12.149336
