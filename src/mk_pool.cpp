@@ -30,21 +30,17 @@
 using namespace std;
 
 
-// this program scans its input (fastq text stream) for forward k mers,
+// this program simply scans its input (text-based canonical k-mers) and 
+// convert them into a binary format compatible with db_uniq 
+// and print output to stdout
 
 // usage:
-//    g++ -O3 --std=c++11 -o vfkmrz_bunion vfkmrz_bunion.cpp
-//    ./vfkmrz_bunion -k1 </path/to/kmer_list1> -k2 </path/to/kmer_list2>
+//    g++ -O3 --std=c++11 -o mk_pool mk_pool.cpp
+//    ./mk_pool <binary input>
 //
-// standard fastq format only for input, otherwise failure is almost guaranteed. 
 
 // global variable declaration starts here
 constexpr auto k = 31;
-
-// set operation mode
-// valid values: 0, 1, 2
-// 0 is set union operation; 1 is set intersection operation; 2 is set difference([set1-set2]);
-constexpr auto s_mod = 0;
 
 // parameters for <unistd.h> file read; from the source of GNU coreutils wc
 constexpr auto step_size = 256 * 1024 * 1024;
@@ -141,7 +137,11 @@ void seq_decode(char* buf, const int len, const int_type seq_code, int_type* cod
     buf[len-1] = '\0';
 }
 
-
+// this function reads KMC k-mers, 
+// then generates reverse complementary k-mers,
+// and encode them into 64-bit integers
+// and store them in a binary form:
+// interger1[64-bit; k-mer 1],interger2[64-bit; snp ID 1],interger3[64-bit; k-mer 2],interger4[64-bit; snp ID 2]...
 template <class int_type>
 void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, int_type>>& k_vec, const int_type* code_dict, const int_type b_mask) {
     auto t_start = chrono_time();
@@ -162,8 +162,6 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
     char seq_buf[k];
     char rcseq_buf[k];
 	char snp_id[16];
-
-    //auto fh = fstream(out_path, ios::out | ios::binary);
 
 	bool id_switch = false;
     bool has_wildcard = false;
@@ -199,7 +197,6 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
 
 				snp_id[snp_pos] = '\0';
 				int_type id_int = stoull(snp_id);
-				//int_type id_int = 1;
 
                 k_vec.push_back(tuple<int_type, int_type>(code1, id_int));
                 k_vec.push_back(tuple<int_type, int_type>(code2, id_int));
@@ -222,10 +219,6 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
 				}
             }
         }
-
-        //fh.write(&kmers[0], kmers.size());
-
-        // cerr << n_lines << " lines were scanned after " << (chrono_time() - t_start) / 1000 << " seconds" << endl;
     }
 
     auto timeit = chrono_time();
@@ -259,12 +252,8 @@ void multi_btc64(int n_path, char** kpaths) {
     auto timeit = chrono_time();
 
 	sort(kdb.begin(), kdb.end(), cmp_tuple<int_type>);
-    // typename vector<int_type>::iterator ip = unique(kdb.begin(), kdb.end());
-    // kdb.resize(std::distance(kdb.begin(), ip));
     cerr << "Sorting done! " << "It takes " << (chrono_time() - timeit) / 1000 << " secs" << endl;
     cerr << "the kmer list has " << kdb.size() << " kmers" << endl;
-
-    // ofstream fh(out_path, ofstream::out | ofstream::binary);
 
 	vector<int_type> o_buff;
 	bool eq_last = false;
@@ -288,7 +277,6 @@ void multi_btc64(int n_path, char** kpaths) {
 		o_buff.push_back(get<0>(last_elem));
 		o_buff.push_back(get<1>(last_elem));
 	}
-    cerr << "the kmer list has " << o_buff.size()/2<< " kmers after purging conflicts" << endl;
 
     ofstream fh(out_path, ofstream::binary);
 

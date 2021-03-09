@@ -13,13 +13,12 @@
 using namespace std;
 
 
-// this program scans its input (fastq text stream) for forward k mers,
+// this simple program scans its binary input (64-bit integers) for k-mers and snp IDs,
+// and convert those into text-based output and print to stdout 
 
 // usage:
-//    g++ -O3 --std=c++11 -o vfkmrz_bunion vfkmrz_bunion.cpp
-//    ./vfkmrz_bunion -k1 </path/to/kmer_list1> -k2 </path/to/kmer_list2>
-//
-// standard fastq format only for input, otherwise failure is almost guaranteed. 
+//    g++ -O3 --std=c++11 -o db_dump db_dump.cpp
+//    ./db_dump <input.bin>
 
 // global variable declaration starts here
 constexpr auto k = 31;
@@ -33,7 +32,7 @@ constexpr auto s_mod = 0;
 constexpr auto step_size = 256 * 1024 * 1024;
 constexpr auto buffer_size = 256 * 1024 * 1024;
 
-// output file path
+// output file path to stdout
 constexpr auto out_path = "/dev/stdout";
 
 // get time elapsed since when it all began in milliseconds.
@@ -109,8 +108,6 @@ void bit_load(const char* k_path, vector<int_type>& buffer, vector<int_type>& k_
     int cur_pos = 0;
     char seq_buf[k+1];
 
-    //auto fh = fstream(out_path, ios::out | ios::binary);
-
     int fd;
     fd = open(k_path, O_RDONLY);
 
@@ -132,7 +129,6 @@ void bit_load(const char* k_path, vector<int_type>& buffer, vector<int_type>& k_
 
         for (int i = 0;  i < bytes_read / 8;  ++i) {
             int_type code = window[i];
-                // auto code = seq_encode<int_type>(seq_buf, k, code_dict, b_mask);
 
 			if ( i % 2 == 0) {
 				seq_decode(seq_buf, k+1, code, code_dict, b_mask);    
@@ -158,15 +154,6 @@ void multi_btdc64(int n_path, char** kpaths) {
     int_type code_dict[1 << (sizeof(char) * 8)];
     make_code_dict<int_type>(code_dict);
 	
-	/*
-	uint32_t lsb_32 = 1;
-    uint32_t b_mask_32 = (lsb_32 << bpb) - lsb_32;
-
-    uint32_t code_dict_32[1 << (sizeof(char) * 4)];
-    make_code_dict<uint32_t>(code_dict_32);
-	*/
-
-
     vector<int_type> kdb;
     vector<int_type> buffer(buffer_size);
 

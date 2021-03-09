@@ -31,21 +31,21 @@
 using namespace std;
 
 
-// this program scans its input (fastq text stream) for forward k mers,
+// this simple program scans its input for raw sck-mers,
+// then it searches each sck-mer across a list of genomes
+// and report the presence/absence of sck-mers across these genomes as a profile 
+// for the selection of sck-mers within species
 
 // usage:
-//    g++ -O3 --std=c++11 -o vfkmrz_bunion vfkmrz_bunion.cpp
-//    ./vfkmrz_bunion -k1 </path/to/kmer_list1> -k2 </path/to/kmer_list2>
+//    g++ -O3 --std=c++11 -o db_val db_val.cpp
+//    ./db_val -d <raw sck-mers> -n <species label> -L <a list of paths of genomes> -t <no of threads>
 //
-// standard fastq format only for input, otherwise failure is almost guaranteed. 
+// genomes should supplied in FASTA format
+// species label should be a 6-digit number and the first digit should be non-zero. For example, 100001 is good, 000012 is not OK.
+// the format of sck-mer input and its profile output is documented in details below
 
 // global variable declaration starts here
 constexpr auto k = 31;
-
-// set operation mode
-// valid values: 0, 1, 2
-// 0 is set union operation; 1 is set intersection operation; 2 is set difference([set1-set2]);
-constexpr auto s_mod = 0;
 
 // parameters for <unistd.h> file read; from the source of GNU coreutils wc
 constexpr auto step_size = 256 * 1024 * 1024;
@@ -141,7 +141,27 @@ void seq_decode(char* buf, const int len, const int_type seq_code, int_type* cod
     buf[len-1] = '\0';
 }
 
-
+// INPUT:  A raw sck-mer file (e.g. 100001-snp-kmer.tsv) with content like:
+//
+// ...
+//
+// 343 25  TGGATACCACGGCGCAAGAGCACGCACAGAA TGGATACCACGGCGCAAGAGCACGCGCAGAA \
+//   TTCTGTGCGTGCTCTTGCGCCGTGGTATCCA TTCTGCGCGTGCTCTTGCGCCGTGGTATCCA
+//
+// 343 24  GGATACCACGGCGCAAGAGCACGCACAGAAT GGATACCACGGCGCAAGAGCACGCGCAGAAT \
+//   ATTCTGTGCGTGCTCTTGCGCCGTGGTATCC ATTCTGCGCGTGCTCTTGCGCCGTGGTATCC
+//
+// ...
+//
+// where each line contains, in this order:
+//
+//      $1 - genomic position of SNP
+//      $2 - zero-based offset of SNP in forward 31-mer
+//      $3 - forward 31-mer covering the SNP's major allele
+//      $4 - forward 31-mer covering the SNP's minor allele
+//      $5 - reverse complement of $3
+//      $6 - reverse complement of $4
+//
 template <class int_type>
 void load_profile(const char* k_path, vector<char>& buffer, vector<int_type>& kv1, vector<int_type>& kv2, vector<int_type>& kv3, vector<int_type>& kv4, vector<tuple<int_type, int_type>>& k_info, int_type* code_dict, const int_type b_mask) {
     auto t_start = chrono_time();
@@ -164,8 +184,6 @@ void load_profile(const char* k_path, vector<char>& buffer, vector<int_type>& kv
 
 	char snp_pos[16];
 	char kmer_pos[4];
-
-    //auto fh = fstream(out_path, ios::out | ios::binary);
 
 	int cur_field = 0;
     bool has_wildcard = false;
@@ -251,6 +269,7 @@ void load_profile(const char* k_path, vector<char>& buffer, vector<int_type>& kv
     close(fd);
 }
 
+// this simple function load all possible k-mers from a FASTA file 
 template <class int_type>
 void fna_load_pool(const char* fna_path, vector<char>& buffer, unordered_map<int_type, int_type>& k_map, const int_type* code_dict, const int_type b_mask) {
     auto t_start = chrono_time();
@@ -323,16 +342,6 @@ void fna_load_pool(const char* fna_path, vector<char>& buffer, unordered_map<int
 					for (int l = k-1; l >= 0; --l) {
 						rckmer_buff[k-1-l] = comp_map[kmer_buff[l]];
 					}
-
-					/* not really necessary when rc kmers present
-					auto rckmer_int = seq_encode<int_type>(rckmer_buff, k, code_dict, b_mask);
-
-					if (k_map.find(rckmer_int) == k_map.end()) {
-						k_map.insert({rckmer_int, 1});
-					} else {
-						++k_map[rckmer_int];
-					}
-					*/
 				}
 
 				cur_pos = 0;
@@ -341,6 +350,8 @@ void fna_load_pool(const char* fna_path, vector<char>& buffer, unordered_map<int
 				++n_lines;
 			} else {
                 if (is_base) {
+					// many fasta files contain DNA bases in lower case
+					// this should be handled
                     bases[cur_pos++] = toupper(c);
                 }
             }
@@ -371,19 +382,6 @@ void fna_load_pool(const char* fna_path, vector<char>& buffer, unordered_map<int
 			} else {
 				++k_map[kmer_int];
 			}
-
-			/* not really necessary when rc kmers present
-			for (int l = k-1; l >= 0; --l) {
-				rckmer_buff[k-1-l] = comp_map[kmer_buff[l]];
-			}
-
-			auto rckmer_int = seq_encode<int_type>(rckmer_buff, k, code_dict, b_mask);
-			if (k_map.find(rckmer_int) == k_map.end()) {
-				k_map.insert({rckmer_int, 1});
-			} else {
-				++k_map[rckmer_int];
-			}
-			*/
 		}
 
 		cur_pos = 0;
@@ -399,6 +397,12 @@ void fna_load_pool(const char* fna_path, vector<char>& buffer, unordered_map<int
 }
 
 
+// this simple function load all possible k-mers from a tsv file which 
+// contains k-mers and IDs
+// e.g.
+// CTGCTAGTTTCCCGGCACGCTCTCTGTCTCC 204557
+// AACGTTCTCACCATACTCTGCTAGTTTCCCG 204560
+// ...
 template <class int_type>
 void bit_load_pool(const char* k_path, vector<char>& buffer, unordered_map<int_type, int_type>& k_map, const int_type* code_dict, const int_type b_mask) {
     auto t_start = chrono_time();
@@ -415,8 +419,6 @@ void bit_load_pool(const char* k_path, vector<char>& buffer, unordered_map<int_t
 
     char seq_buf[k];
     char snp_id[16];
-
-    //auto fh = fstream(out_path, ios::out | ios::binary);
 
     bool id_switch = false;
     bool has_wildcard = false;
@@ -469,10 +471,6 @@ void bit_load_pool(const char* k_path, vector<char>& buffer, unordered_map<int_t
                 }
             }
         }
-
-        //fh.write(&kmers[0], kmers.size());
-
-        // cerr << n_lines << " lines were scanned after " << (chrono_time() - t_start) / 1000 << " seconds" << endl;
     }
 
     auto timeit = chrono_time();
@@ -483,24 +481,18 @@ void bit_load_pool(const char* k_path, vector<char>& buffer, unordered_map<int_t
 template <class int_type>
 void bin_load_pool(const char* p_path, unordered_map<int_type, int_type>& k_map) {
     size_t filesize = get_fsize(p_path);
-    //Open file
+    // open file
     int fd = open(p_path, O_RDONLY, 0);
     assert(fd != -1);
-    //Execute mmap
-    //uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+    // execute mmap
     int_type* mmappedData = (int_type *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
     assert(mmappedData != MAP_FAILED);
-    //Write the mmapped data to stdout (= FD #1)
-
+    // write the mmapped data to stdout (= FD #1)
     // write(1, mmappedData, filesize);
-
-    // char seq_buf[k+1];
 
     auto l_start = chrono_time();
 
     for (uint64_t i = 0; i < filesize/8; i=i+2) {
-        // seq_decode<uint_fast64_t>(seq_buf, k, mmappedData[i], b_mask);
-
         auto kmer_int = mmappedData[i];
         auto kcount = mmappedData[i+1];
 
@@ -508,7 +500,7 @@ void bin_load_pool(const char* p_path, unordered_map<int_type, int_type>& k_map)
 		k_map.insert({kmer_int, kcount});
     }
 
-    //Cleanup
+    // cleanup after mmap
     int rc = munmap(mmappedData, filesize);
     assert(rc == 0);
     close(fd);
@@ -537,6 +529,33 @@ void set_kvecs(char* db_path, const int kv_n, vector<int_type>* kvecs, vector<tu
 	cerr << "DB loading OK!" << endl;
 }
 
+// INPUT:  A 100001_kmer_profiles.tsv file with content like:
+//
+// ...
+//
+// 343 25  TGGATACCACGGCGCAAGAGCACGCACAGAA TGGATACCACGGCGCAAGAGCACGCGCAGAA \
+//   TTCTGTGCGTGCTCTTGCGCCGTGGTATCCA TTCTGCGCGTGCTCTTGCGCCGTGGTATCCA 1   11  259564  8   3
+//
+// 343 24  GGATACCACGGCGCAAGAGCACGCACAGAAT GGATACCACGGCGCAAGAGCACGCGCAGAAT \
+//   ATTCTGTGCGTGCTCTTGCGCCGTGGTATCC ATTCTGCGCGTGCTCTTGCGCCGTGGTATCC 1   11  259564  8   3
+//
+// ...
+//
+// where each line contains, in this order:
+//
+//      $1 - genomic position of SNP
+//      $2 - zero-based offset of SNP in forward 31-mer
+//      $3 - forward 31-mer covering the SNP's major allele
+//      $4 - forward 31-mer covering the SNP's minor allele
+//      $5 - reverse complement of $3
+//      $6 - reverse complement of $4
+//      $7 - # of genomes in which none of $3, $4, $5 and $6 presents 
+//      $8 - # of genomes in which one of $3, $4, $5 and $6 presents one time
+//      $9 - # of genomes in which one or more of $3, $4, $5 and $6 presents more than one time
+//      $10 - 6 decimal digit species ID
+//      $11 - Break-down of $8: # of genomes in which either $3 or $4 presents one time
+//      $12 - Break-down of $8: # of genomes in which either $5 or $6 presents one time
+//
 template <class int_type>
 void multi_dbval(int kv_n, vector<int_type>* kvecs, int n_path, vector<string>& kpaths, vector<tuple<int, int, int, int, int>>& prof_vec) {	
 	assert(kv_n == 4);
@@ -596,12 +615,6 @@ void multi_dbval(int kv_n, vector<int_type>* kvecs, int n_path, vector<string>& 
 			auto ref_sum = lc_vecs[0][j] + lc_vecs[2][j];
 			auto alt_sum = lc_vecs[1][j] + lc_vecs[3][j];
 			
-			/*
-			if (strcmp(kp_type, ".fna") == 0) {
-				lc_sum = lc_sum / 2;
-			}
-			*/
-
 			if (lc_sum == 0) {
 				++get<0>(prof_vec[j]);			
 			} else if (lc_sum == 1) {

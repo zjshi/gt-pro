@@ -30,12 +30,18 @@ Version()
    echo "GT-Pro version 1.0.1"
 }
 
-
+# automatic path exporting
 REALME=`realpath $0`
 GTPRO=`dirname ${REALME}`
 EBSROOT=`dirname ${GTPRO}`
 export PATH=$PATH:${GTPRO}/bin/
 
+# controller calling functional modules
+# four modules are currently supported
+# 1. build: build a customized GT-Pro database 
+# 2. optimize: optimize a databse as well as create necessary data structures before running
+# 3. genotype: identify genotypes in metagenomes in FASTQ format
+# 4. parse: parse raw genotype output files into a more human readable format
 if [ "$1" = "build" ]; then
 	shift
 	python3 ${GTPRO}/scripts/build_db.py $*

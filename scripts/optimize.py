@@ -2,6 +2,8 @@
 import sys, os, argparse, shutil
 import extract_kmers 
 
+# optimize.py is a wrapper of gt_pro which provides a more intuitive interface 
+# for the optimization of GT-Pro database
 def parse_args():
 	parser = argparse.ArgumentParser(
 		formatter_class=argparse.RawTextHelpFormatter,
@@ -33,6 +35,7 @@ def run_command(cmd, env=None):
 	else:
 		return out, err
 
+# call main program gt_pro to perform database optimization 
 def optimize(dbname):
 	sys.stderr.write("[OK] start initial optimization\n")
 	raw_bin = dbname + ".bin"
@@ -58,6 +61,9 @@ def optimize(dbname):
 		assert False 
 	sys.stderr.write("[OK] initial optimization done\n")
 
+# call gt_pro to perform a break-in test
+# this step ensure everything is OK
+# temporary output files are cleaned at the end of test
 def breakin_test(dbname, inpath, tmp_dir):
 	sys.stderr.write("[OK] finalize optimization with a break-in test\n")
 	assert os.path.isfile(inpath)

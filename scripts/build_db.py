@@ -2,6 +2,10 @@
 import sys, os, argparse, shutil
 import extract_kmers 
 
+# build_db.py implements a pipeline for building GT-Pro customized database
+# it requires a list of paths to species folders as the main input
+# details and guidelines about preparing such a species folder can be found
+# in GT-Pro main docs as well as the helper text of this program
 def parse_args():
 	parser = argparse.ArgumentParser(
 		formatter_class=argparse.RawTextHelpFormatter,
@@ -83,6 +87,14 @@ def read_input_list(in_path):
 
 	return input_path_array
 
+# this function validates each species folder
+# it particularly looks for file following files or directory in a species folder
+# 1. a directory named "genomes" containing whole genome sequences in FASTA format
+# 2. a reference genome named "reference.fna"
+# 3. a multiple sequence alignment file named "msa.fa" which hosting the alignment of whole genomes in "genomes" to "reference.fna"
+# 4. a VCF file named "core_snps.vcf" describing core snps in the genomic coordinate of "reference.fna" 
+# 5. (optional) a tab separated values file named "coords.tsv" 
+# It also makes an attempt to assign species lable to input valid species
 def validate_input_paths(input_path_array):
 	path_objs = []
 	dir_target = 'genomes'
@@ -114,6 +126,7 @@ def validate_input_paths(input_path_array):
 	
 	return path_objs 
 
+# locate all genome FASTA files (.fna or .fa) in a directory
 def locate_genomes(in_dir):
 	assert os.path.isdir(in_dir) 
 	fpaths = []
@@ -127,6 +140,7 @@ def locate_genomes(in_dir):
 
 	return fpaths
 
+# call extract_kmers.py submodule which extracts snp-covering k-mers
 def run_extract_kmers(path_obj, output_dir):
 	temp_dir = output_dir.rstrip('/')+'/temp/extract/'
 	if not os.path.isdir(temp_dir):
@@ -134,6 +148,7 @@ def run_extract_kmers(path_obj, output_dir):
 	
 	extract_kmers.run(path_obj, temp_dir)
 
+# call db_val to validate snp-covering k-mers (sck-mers) within species
 def intraspec_eval(path_obj, output_dir, n_threads=1):
 	assert 'kmer_stage1' in path_obj
 	
@@ -180,6 +195,8 @@ def intraspec_eval(path_obj, output_dir, n_threads=1):
 	path_obj['kmer_stage2'] = "{}{}.sckmer_profiles.tsv".format(temp_dir, path_obj['species_lab'])
 	path_obj['kmer_stage3'] = code_kmers
 	
+# extract and pool all possible k-mers from whole genome sequences per species 
+# this step call kmc, kmc_dump and mk_pool
 def mk_kpool(path_obj, output_dir, n_threads=1):
 	assert 'genome_list' in path_obj
 	temp_dir = output_dir.rstrip('/')+'/temp/kpools/'
@@ -212,6 +229,8 @@ def mk_kpool(path_obj, output_dir, n_threads=1):
 	run_command(command, environ)	
 	path_obj['kmer_pool'] = "{}{}_pool_wtrc.bin".format(temp_dir, path_obj['species_lab'])
 
+# apply n-1 species filter to validate sck-mers
+# those who pass the filter are identified as species-specific sck-mers
 def ss_screen(path_objs, output_dir, n_threads=1):
 	for i, path_obj in enumerate(path_objs):
 		assert 'kmer_pool' in path_obj
@@ -251,6 +270,8 @@ def ss_screen(path_objs, output_dir, n_threads=1):
 		run_command(command, environ)
 		path_obj['kmer_stage4'] = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
 
+# this step pools all species-specific sck-mers and charaterize snp centered spans (sc-spans) for compression
+# it also purges all temporary files unless otherwise specified
 def merge_build(path_objs, output_dir, dbname, keep_tmp=False, n_threads=1):
 	temp_dir = output_dir.rstrip('/')+'/temp/final_build/'
 	if not os.path.isdir(temp_dir):
@@ -278,9 +299,12 @@ def merge_build(path_objs, output_dir, dbname, keep_tmp=False, n_threads=1):
 	if keep_tmp is not True:
 		shutil.rmtree(output_dir.rstrip('/')+'/temp/')
 
+# finally generates two accessory files
+# 1. dbname.snp_dict.tsv which can be used for parsing raw GT-Pro genotype output into a more human readable format
+# 2. dbname.species_map.tsv which provides a one-to-one mapping relationship between species label and input specie folder
 def generate_accessories(path_objs, output_dir, dbname, n_threads=1):
 	snp_dict = output_dir.rstrip('/')+'/'+dbname+'.snp_dict.tsv'
-	spec_lab_map = output_dir.rstrip('/')+'/'+dbname+'.speciesi_map.tsv'
+	spec_lab_map = output_dir.rstrip('/')+'/'+dbname+'.species_map.tsv'
 
 	with open(spec_lab_map, 'w') as fw:
 		fw.write('species\tinput_dir\n')
@@ -325,6 +349,11 @@ def generate_accessories(path_objs, output_dir, dbname, n_threads=1):
 	environ = os.environ.copy()
 	run_command(command, environ)
 
+# main function presents a pipeline which calls the submodules orderly 
+# read input -> validate neccessary files -> extract sck-mers ->
+# validate sck-mers within species -> validate sck-mers with n-1 species filter ->
+# compress species-specific sck-mers and generate sc-spans ->
+# generate accessory files
 def main():
 	args = parse_args()
 

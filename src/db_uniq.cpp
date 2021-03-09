@@ -31,13 +31,16 @@
 using namespace std;
 
 
-// this program scans its input (fastq text stream) for forward k mers,
+// this simple program scans its binary input (64-bit integers) for k-mers and snp IDs, 
+// then query each k-mer in the k-mer pools. 
+// Any k-mer found in a k-mer pool is excluded.
+// input, output and k-mer pool share the same format: 
+// interger1[64-bit; k-mer 1],interger2[64-bit; snp ID 1],interger3[64-bit; k-mer 2],interger4[64-bit; snp ID 2]...
 
 // usage:
-//    g++ -O3 --std=c++11 -o vfkmrz_bunion vfkmrz_bunion.cpp
-//    ./vfkmrz_bunion -k1 </path/to/kmer_list1> -k2 </path/to/kmer_list2>
+//    g++ -O3 --std=c++11 -o db_uniq db_uniq.cpp
+//    ./db_uniq -d <binary input> -o <binary output> -L <a list of paths of k-mer pools>
 //
-// standard fastq format only for input, otherwise failure is almost guaranteed. 
 
 // global variable declaration starts here
 constexpr auto k = 31;
@@ -149,8 +152,6 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
     char seq_buf[k];
 	char snp_id[16];
 
-    //auto fh = fstream(out_path, ios::out | ios::binary);
-
 	bool id_switch = false;
     bool has_wildcard = false;
 
@@ -202,9 +203,6 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
             }
         }
 
-        //fh.write(&kmers[0], kmers.size());
-
-        // cerr << n_lines << " lines were scanned after " << (chrono_time() - t_start) / 1000 << " seconds" << endl;
     }
 
     auto timeit = chrono_time();
@@ -213,24 +211,18 @@ void bit_load(const char* k_path, vector<char>& buffer, vector<tuple<int_type, i
 template <class int_type>
 void binary_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec) {
 	size_t filesize = get_fsize(k_path);
-	//Open file
+	// open file
 	int fd = open(k_path, O_RDONLY, 0);
 	assert(fd != -1);
-	//Execute mmap
-	//uint64_t* mmappedData = (uint64_t *) mmap(NULL, filesize, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+	// execute mmap
 	int_type* mmappedData = (int_type *) mmap(NULL, filesize, PROT_READ, MMAP_FLAGS, fd, 0);
 	assert(mmappedData != MAP_FAILED);
-	//Write the mmapped data to stdout (= FD #1)
-
+	// write the mmapped data to stdout (= FD #1)
 	// write(1, mmappedData, filesize);
-
-	// char seq_buf[k+1];
 
 	auto l_start = chrono_time();
 
 	for (uint64_t i = 0; i < filesize/8; i=i+2) {
-		// seq_decode<uint_fast64_t>(seq_buf, k, mmappedData[i], b_mask);
-
 		auto kmer_int = mmappedData[i];
 		auto snp = mmappedData[i+1];
 
@@ -239,7 +231,7 @@ void binary_load(const char* k_path, vector<tuple<int_type, int_type>>& k_vec) {
 		k_vec.push_back(k_pair);
 	}
 
-	//Cleanup
+	//cleanup after mmap
 	int rc = munmap(mmappedData, filesize);
 	assert(rc == 0);
 	close(fd);
@@ -269,8 +261,6 @@ void split_binary_load(vector<tuple<int_type, int_type>>& k_vec, unordered_map<u
 	vector<tuple<uint32_t, uint32_t, int_type>> lm_vec;
 
 	for (auto it = k_vec.begin(); it != k_vec.end(); ++it) {
-		// seq_decode<uint_fast64_t>(seq_buf, k, mmappedData[i], b_mask);
-
 		auto kmer_int = get<0>(*it);
 
 		uint32_t lmer_int = (uint32_t)((kmer_int & 0xFFFFFFFF00000000LL) >> 32);
@@ -284,14 +274,10 @@ void split_binary_load(vector<tuple<int_type, int_type>>& k_vec, unordered_map<u
 		auto lm_elem = make_tuple(lmer, mmer_int, kmer_int);
 		lm_vec.push_back(lm_elem);
 
-		// cerr << chrono_time() << ":  " << lmer << " - " << mmappedData[i] << '\n';
-
 		if (cur_lmer != lmer) {
 			if (start == -1){
 				start = 0;
 			} else {
-				// cerr << chrono_time() << ":  " << cur_lmer << ": (" << start << " , " << end << "}\n";
-				// cerr << chrono_time() << ":  " << end - start << '\n';
 				auto coord = make_tuple(start, end);
 				lmer_indx.insert({cur_lmer, coord});
 
@@ -312,6 +298,7 @@ void split_binary_load(vector<tuple<int_type, int_type>>& k_vec, unordered_map<u
 	start = -1;
 	end = -1;
 
+	// using a very larger number as a starter
 	auto cur_mmer = 2147483648;
 
 	for (auto it = lm_vec.begin(); it != lm_vec.end(); ++it) {
@@ -324,10 +311,6 @@ void split_binary_load(vector<tuple<int_type, int_type>>& k_vec, unordered_map<u
             if (start == -1){
                 start = 0;
             } else {
-                // cerr << chrono_time() << ":  " << cur_lmer << ": (" << start << " , " << end << "}\n";
-                // cerr << chrono_time() << ":  " << end - start << '\n';
-				
-				// cerr << start << " - " << end << endl;
                 auto coord = make_tuple(start, end);
                 mmer_indx.insert({cur_mmer, coord});
 
@@ -379,11 +362,8 @@ void multi_kuniq(vector<string> kpaths, char* out_path, bool pool_sorted, bool s
 
     auto timeit = chrono_time();
 	sort(kdb.begin(), kdb.end(), cmp_tuple<int_type>);
-    // typename vector<int_type>::iterator ip = unique(kdb.begin(), kdb.end());
-    // kdb.resize(std::distance(kdb.begin(), ip));
     cerr << "Sorting done! " << "It takes " << (chrono_time() - timeit) / 1000 << " secs" << endl;
     cerr << "the kmer list has " << kdb.size() << " kmers" << endl;
-
 	cerr << "start to check conflicts" << endl;
 
     vector<tuple<int_type, int_type>> kpool;
@@ -429,12 +409,9 @@ void multi_kuniq(vector<string> kpaths, char* out_path, bool pool_sorted, bool s
     }
 
 
-    // ofstream fh(out_path, ofstream::out | ofstream::binary);
 	vector<int_type> o_buff;
 
     for (auto it = kdb.begin(); it != kdb.end(); ++it) {
-		// seq_decode(seq_buf, k+1, get<0>(*it), code_dict, b_mask);    
-		// cerr << seq_buf << '\t' << get<1>(*it) << '\n';
 		o_buff.push_back(get<0>(*it));
 		o_buff.push_back(get<1>(*it));
     }
