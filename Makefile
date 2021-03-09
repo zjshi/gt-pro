@@ -23,7 +23,7 @@ clean:
 	rm ./bin/db_build ./bin/gt_pro ./bin/mk_pool ./bin/db_val ./bin/db_dump ./bin/db_uniq
 
 reformat:
-	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/sckmerdb_build.cpp > tmp-1.cpp && mv tmp-1.cpp src/sckmerdb_build.cpp
+	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/db_build.cpp > tmp-1.cpp && mv tmp-1.cpp src/db_build.cpp
 	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/gt_pro.cpp > tmp-2.cpp && mv tmp-2.cpp src/gt_pro.cpp
 	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/mk_pool.cpp > tmp-3.cpp && mv tmp-3.cpp src/mk_pool.cpp
 	clang-format -style="{BasedOnStyle: llvm, ColumnLimit: 128}" src/db_val.cpp > tmp-4.cpp && mv tmp-4.cpp src/db_val.cpp
