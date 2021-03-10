@@ -10,4 +10,6 @@
 *.aux
 *.bak
 
+Makefile.static
+
 **/__pycache__

@@ -311,6 +311,12 @@ The `coords.tsv` has three fields including chrom, start and end and each row sp
 
 The --dbname can used for assigning a database name. It is optional and when not supplied, GT-Pro will use a default name of 'sckmer_db'. The --threads flag tells GT-Pro how many threads to use to build the database. 
 
+Upon the successful completion of the example command, you may find the following files included in the designated output directory:
+
+1. tri_db.bin, the body of the customized database.
+2. tri_db.snp_dict.tsv, a SNP dictionary file for parsing the raw output from GT-Pro with the customized database.
+3. tri_db.species_map.tsv, a file in the format of tab separated values that maps species labels to input species directories.
+
 For more descriptions on other arguments, simply type in
 
 `/path/to/GT_Pro build -h`

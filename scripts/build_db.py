@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, argparse, shutil
+import signal, time
+import multiprocessing as mp
 import extract_kmers 
 
 # build_db.py implements a pipeline for building GT-Pro customized database
@@ -47,29 +49,22 @@ def run_command(cmd, env=None):
 		return out, err
 
 def parallel(function, argument_list, threads):
-	""" Based on: https://gist.github.com/admackin/003dd646e5fadee8b8d6 """
-
 	def init_worker():
 		signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-	sys.stderr.write("initializing the process pool\n")
 	pool = mp.Pool(int(threads), init_worker)
-	sys.stderr.write("Done initializing, the pool now has {} workers\n".format(threads))
 
 	try:
 		results = []
-		for i, arguments in enumerate(argument_list):
+		for arguments in argument_list:
 			p = pool.apply_async(function, args=arguments)
 			results.append(p)
-			sys.stderr.write("worker {} committed to work\n".format(i))
-
 		pool.close()
-		sys.stderr.write("multlpleprocessing pool is now closed\n")
 
 		while True:
 			if all(r.ready() for r in results):
 				return [r.get() for r in results]
-			sleep(1)
+			time.sleep(1)
 
 	except KeyboardInterrupt:
 		pool.terminate()
@@ -141,13 +136,17 @@ def locate_genomes(in_dir):
 	return fpaths
 
 # call extract_kmers.py submodule which extracts snp-covering k-mers
-def run_extract_kmers(path_obj, output_dir):
+def run_extract_kmers(path_objs, output_dir, n_threads=1):
 	temp_dir = output_dir.rstrip('/')+'/temp/extract/'
 	if not os.path.isdir(temp_dir):
 		os.makedirs(temp_dir)
-	
-	extract_kmers.run(path_obj, temp_dir)
 
+	arg_list = []
+	for path_obj in path_objs:
+		path_obj['kmer_stage1'] = temp_dir + path_obj['species_lab'] + "-snp-kmer.tsv"
+		arg_list.append([path_obj, path_obj['kmer_stage1']])
+	parallel(extract_kmers.run, arg_list, n_threads)
+	
 # call db_val to validate snp-covering k-mers (sck-mers) within species
 def intraspec_eval(path_obj, output_dir, n_threads=1):
 	assert 'kmer_stage1' in path_obj
@@ -253,26 +252,36 @@ def ss_screen(path_objs, output_dir, n_threads=1):
 				fh.write("{}\n".format(filter_path))
 		path_obj['n_minus_1_filter_path'] = filter_list
 	
+	arg_list = []
 	for path_obj in path_objs:
 		assert 'kmer_stage3' in path_obj 
-		command = "db_uniq "
-		command += "-d {} ".format(path_obj['kmer_stage3'])
-		command += "-o {}{}.ss.hq.bin ".format(temp_dir, path_obj['species_lab'])
-		command += "-L {}".format(path_obj['n_minus_1_filter_path'])
-		environ = os.environ.copy()
-		run_command(command, environ)
-
-		command = "db_dump "
-		command += "{}{}.ss.hq.bin ".format(temp_dir, path_obj['species_lab'])
-		command += "1> {}{}.sckmer_allowed.tsv ".format(temp_dir, path_obj['species_lab'])
-		command += "2> {}{}.ss.hq.log ".format(temp_dir, path_obj['species_lab'])
-		environ = os.environ.copy()
-		run_command(command, environ)
+		ss_bin = "{}{}.ss.hq.bin".format(temp_dir, path_obj['species_lab'])
+		filter_list = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
+		sckmer_allowed = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
+		ss_log = "{}{}.ss.hq.log".format(temp_dir, path_obj['species_lab'])
+		arg_list.append([path_obj['kmer_stage3'], ss_bin, filter_list, sckmer_allowed, ss_log])
 		path_obj['kmer_stage4'] = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
+
+	parallel(ss_screen_single, arg_list, n_threads)
+
+def ss_screen_single(kmer_stage3, ss_bin, filter_list, sckmer_allowed, ss_log):
+	command = "db_uniq "
+	command += "-d {} ".format(kmer_stage3)
+	command += "-o {} ".format(ss_bin)
+	command += "-L {}".format(filter_list)
+	environ = os.environ.copy()
+	run_command(command, environ)
+
+	command = "db_dump "
+	command += "{} ".format(ss_bin)
+	command += "1> {} ".format(sckmer_allowed)
+	command += "2> {}".format(ss_log)
+	environ = os.environ.copy()
+	run_command(command, environ)
 
 # this step pools all species-specific sck-mers and charaterize snp centered spans (sc-spans) for compression
 # it also purges all temporary files unless otherwise specified
-def merge_build(path_objs, output_dir, dbname, keep_tmp=False, n_threads=1):
+def merge_build(path_objs, output_dir, dbname):
 	temp_dir = output_dir.rstrip('/')+'/temp/final_build/'
 	if not os.path.isdir(temp_dir):
 		os.makedirs(temp_dir)
@@ -296,13 +305,11 @@ def merge_build(path_objs, output_dir, dbname, keep_tmp=False, n_threads=1):
 	environ = os.environ.copy()
 	run_command(command, environ)
 
-	if keep_tmp is not True:
-		shutil.rmtree(output_dir.rstrip('/')+'/temp/')
 
 # finally generates two accessory files
 # 1. dbname.snp_dict.tsv which can be used for parsing raw GT-Pro genotype output into a more human readable format
 # 2. dbname.species_map.tsv which provides a one-to-one mapping relationship between species label and input specie folder
-def generate_accessories(path_objs, output_dir, dbname, n_threads=1):
+def generate_accessories(path_objs, output_dir, dbname, keep_tmp=False):
 	snp_dict = output_dir.rstrip('/')+'/'+dbname+'.snp_dict.tsv'
 	spec_lab_map = output_dir.rstrip('/')+'/'+dbname+'.species_map.tsv'
 
@@ -349,6 +356,9 @@ def generate_accessories(path_objs, output_dir, dbname, n_threads=1):
 	environ = os.environ.copy()
 	run_command(command, environ)
 
+	if keep_tmp is not True:
+		shutil.rmtree(output_dir.rstrip('/')+'/temp/')
+
 # main function presents a pipeline which calls the submodules orderly 
 # read input -> validate neccessary files -> extract sck-mers ->
 # validate sck-mers within species -> validate sck-mers with n-1 species filter ->
@@ -378,14 +388,15 @@ def main():
 	input_array = read_input_list(input_list)
 	path_objs = validate_input_paths(input_array)
 
+	run_extract_kmers(path_objs, output_dir, n_threads)
+
 	for path_obj in path_objs:
-		run_extract_kmers(path_obj, output_dir)
 		intraspec_eval(path_obj, output_dir, n_threads)
 		mk_kpool(path_obj, output_dir, n_threads)
 	
 	ss_screen(path_objs, output_dir, n_threads)
-	merge_build(path_objs, output_dir, dbname, keep_tmp, n_threads)
-	generate_accessories(path_objs, output_dir, dbname, n_threads)
+	merge_build(path_objs, output_dir, dbname)
+	generate_accessories(path_objs, output_dir, dbname, keep_tmp)
 
 
 if __name__ == "__main__":

@@ -307,8 +307,7 @@ def revcomp(seq):
 	}
 	return ''.join([complement[_] for _ in seq[::-1]])
 
-def dump_tsv(kmers, output):
-	snp_kmer_path = output.rstrip('/') + "-snp-kmer.tsv"
+def dump_tsv(kmers, snp_kmer_path):
 	with open(snp_kmer_path, 'w') as fh:
 		for kmer in kmers:
 			if len(kmer) == 6:
@@ -378,7 +377,7 @@ def open_genome_seq(genome_path):
 
 	return main_genome
 
-def run(path_obj, output_dir):
+def run(path_obj, outname):
 	spec_lab = path_obj['species_lab']
 	ref_path = path_obj['vtarget_paths'][0] 
 	msa_path = path_obj['vtarget_paths'][1] 
@@ -401,6 +400,4 @@ def run(path_obj, output_dir):
 	genome_seqs = load_msa(msa_path)
 	snp_kmers = fetch_all_from_msa(genome_seqs, ref_seq, snp_gb_pos, snp_alleles, k_size, coords)
 
-	outname = output_dir + spec_lab 
 	dump_tsv(snp_kmers, outname)
-	path_obj['kmer_stage1'] = outname + "-snp-kmer.tsv"
