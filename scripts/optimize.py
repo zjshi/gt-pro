@@ -14,7 +14,7 @@ def parse_args():
 		help="""GT-Pro database to optimize""")
 	parser.add_argument('-i', '--in', dest='in', type=str, required=True,
 		help="""A path to a test fastq data. Consider using the one (SRR413665_2.fastq.gz) included in the test directory for convenience""") 
-	parser.add_argument('--tmp', type=str, dest='tmp', default="./",
+	parser.add_argument('--tmp', type=str, dest='tmp', default="./GTPTMP",
 		help="""A directory to host temporary files""")
 
 	args = vars(parser.parse_args())
