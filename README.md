@@ -55,7 +55,9 @@ The main program (`GT_Pro`) should be found in the same directory as `/path/to/g
 
 <b>Notes for C++ compiler</b>
 
-GT-Pro requires a C++ compiler that is compatible with C++ 11 standards to work properly. All the tests have been done and passed with clang-900.0.38, but it should be compatible for GNU C Compiler (newer than 5.4.0). We have not tested GT-Pro with older compilers, but we expect it to run similiarly as long as it compiles successfully.
+GT-Pro requires a C++ compiler that is compatible with C++ 11 standards to work properly. All the tests have been done and passed with clang-900.0.38, but it should be compatible for GNU C Compiler (newer than 5.4.0). We have not tested GT-Pro with older compilers, but we expect it to run similiarly as long as it compiles successfully.  
+
+To use GT-Pro in a environment where its compilation does not go through. We recommend to use this [prebuilt version](https://github.com/zjshi/gt-pro/releases/tag/v1.0.1) as an alternative.  
 
 ## Dowloading default database 
 
@@ -324,4 +326,8 @@ For more descriptions on other arguments, simply type in
 Note: building a database for a large number of species may consume a lot of computing resource as well as take long time. We do not recommend to build large databases on a personal computer.
 
 GT-Pro chooses a default k=31 and both database building and metagenotyping code is heavily optimized over this choice. It does not take other k for database building.
+
+### Note on the use of GT-Pro on batch submission system
+
+Batch submission system may have RAM use restrictions that could cause automatic optimization to fail. If you see such an issue, we recommend to optimize it in a similar environment, with similar RAM, and then either use the resulting L and M parameters or the database transferably. If it is not possible to perform a optiomization in a similiar environment, non-optimal L and M may beused as well. Non-optimal parameters will only result in a mild drop in performance but will have drastic impact when they cause GT-Pro to breach the RAM limit of the computing environment. For such a reason, we recommend to use conservative values.
 
