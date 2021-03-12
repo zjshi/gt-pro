@@ -57,7 +57,7 @@ The main program (`GT_Pro`) should be found in the same directory as `/path/to/g
 
 GT-Pro requires a C++ compiler that is compatible with C++ 11 standards to work properly. All the tests have been done and passed with clang-900.0.38, but it should be compatible for GNU C Compiler (newer than 5.4.0). We have not tested GT-Pro with older compilers, but we expect it to run similiarly as long as it compiles successfully.  
 
-To use GT-Pro in a environment where its compilation does not go through. We recommend to use this [prebuilt version](https://github.com/zjshi/gt-pro/releases/tag/v1.0.1) as an alternative.  
+To use GT-Pro in a computing environment where the compilation does not go through. This [prebuilt version](https://github.com/zjshi/gt-pro/releases/tag/v1.0.1) may be used as an alternative. But we still recommend a compilation when possible.  
 
 ## Dowloading default database 
 
@@ -329,5 +329,5 @@ GT-Pro chooses a default k=31 and both database building and metagenotyping code
 
 ### Note on the use of GT-Pro on batch submission system
 
-Batch submission system may have RAM use restrictions that could cause automatic optimization to fail. If you see such an issue, we recommend to optimize it in a similar environment, with similar RAM, and then either use the resulting L and M parameters or the database transferably. If it is not possible to perform a optiomization in a similiar environment, non-optimal L and M may beused as well. Non-optimal parameters will only result in a mild drop in performance but will have drastic impact when they cause GT-Pro to breach the RAM limit of the computing environment. For such a reason, we recommend to use conservative values.
+Batch submission system may have RAM use restrictions that could cause automatic optimization to fail. If you see such an issue, we recommend to optimize it in a similar environment, with similar RAM, and then either use the resulting L and M parameters or the database transferably. If the optiomization of such is still not possible, non-optimal L and M may be used as well. Non-optimal parameters will only result in a mild drop in performance but will have drastic impact when they cause GT-Pro to breach the RAM limit of the computing environment. For such a reason, we recommend to use conservative values.
 
