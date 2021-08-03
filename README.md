@@ -18,6 +18,14 @@ To genotype a microbiome, GT-Pro takes as input one or more shotgun metagenomics
 
 If you find GT-Pro helpful, please consider citing our Biorxiv paper for now: Zhou Jason Shi, Boris Dimitrov, Chunyu Zhao, Stephen Nayfach, Katherine S. Pollard; "Ultra-rapid metagenotyping of the human gut microbiome"; bioRxiv 2020.06.12.149336; doi: https://doi.org/10.1101/2020.06.12.149336
 
+## Downloading datasets associated with GT-Pro publication 
+
+The GT-Pro SNP catalogue and genotype profiles of 25,133 human microbiome samples generated in this study are available in a cloud server ([portal](https://fileshare.czbiohub.org/s/waXQzQ9PRZPwTdk)) with public access permission or accessed using its text-based url (https://fileshare.czbiohub.org/s/waXQzQ9PRZPwTdk).  
+
+Note:  
+
+* These files are not directly related to the running of GT-Pro program.
+
 ## Step-by-step tutorial
 
 If you are a first-time user, we recommend to use this [step-by-step tutorial](ExampleTutorial.md) to get started with GT-Pro. 
