@@ -13,3 +13,4 @@
 Makefile.static
 
 **/__pycache__
+bin/*

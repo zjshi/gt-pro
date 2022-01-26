@@ -256,10 +256,9 @@ def ss_screen(path_objs, output_dir, n_threads=1):
 	for path_obj in path_objs:
 		assert 'kmer_stage3' in path_obj 
 		ss_bin = "{}{}.ss.hq.bin".format(temp_dir, path_obj['species_lab'])
-		filter_list = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
 		sckmer_allowed = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
 		ss_log = "{}{}.ss.hq.log".format(temp_dir, path_obj['species_lab'])
-		arg_list.append([path_obj['kmer_stage3'], ss_bin, filter_list, sckmer_allowed, ss_log])
+		arg_list.append([path_obj['kmer_stage3'], ss_bin, path_obj['n_minus_1_filter_path'], sckmer_allowed, ss_log])
 		path_obj['kmer_stage4'] = "{}{}.sckmer_allowed.tsv".format(temp_dir, path_obj['species_lab'])
 
 	parallel(ss_screen_single, arg_list, n_threads)
@@ -270,7 +269,7 @@ def ss_screen_single(kmer_stage3, ss_bin, filter_list, sckmer_allowed, ss_log):
 	command += "-o {} ".format(ss_bin)
 	command += "-L {}".format(filter_list)
 	environ = os.environ.copy()
-	run_command(command, environ)
+	out, err = run_command(command, environ)
 
 	command = "db_dump "
 	command += "{} ".format(ss_bin)
