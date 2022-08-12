@@ -319,7 +319,7 @@ def generate_accessories(path_objs, output_dir, dbname, keep_tmp=False):
 			fw.write('{}\t{}\n'.format(path_obj['species_lab'], path_obj['species_dir']))
 	
 	with open(snp_dict+"_tmp", 'w') as fw:
-		fw.write('species\tglobal_pos\tcontig\tlocal_pos\tref_allele\talt_allele\n')
+		fw.write('#species\tglobal_pos\tcontig\tlocal_pos\tref_allele\talt_allele\n')
 		for path_obj in path_objs:
 			assert 'species_lab' in path_obj and 'vtarget_paths' in path_obj and 'kmer_stage4' in path_obj
 			assert os.path.isfile(path_obj['vtarget_paths'][2])
