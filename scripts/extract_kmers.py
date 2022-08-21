@@ -35,110 +35,6 @@ def parallel(function, argument_list, threads):
 		pool.join()
 		sys.exit("\nKeyboardInterrupt")
 
-"""
-This function fetch all possible kmers of size specified by kmer_size argument,
-all fetched kmers will serve as the database used for verify the uniqueness of kmers that actually snp
-build a dictionary for all possible kmers is quite time consuming, one possible way to speed up is to pre-compute it and store it in form of binary file that is directly loadable, thus avoid hash computation again.
-
-Upadate: 07/01/18
-Using the following format for the sake of simplicity
-kmer_seq: ATGC
-"""
-def fetch_all_kmers(genome_seq, kmer_size, coords=None):
-	kmers = []
-
-	if len(genome_seq) < kmer_size:
-		return kmers
-	else:
-		for i in range(len(genome_seq)-kmer_size+1):
-			kmer = genome_seq[i:(i+kmer_size)]
-			kmers.append(kemr)
-			rc_kmer = revcomp(kmer)
-		return kmers
-
-def build_kmer_db(genome_seq, kmer_size):
-	kmers = dict()
-
-	if len(genome_seq) < kmer_size:
-		return kmers
-	else:
-		for i in range(len(genome_seq)-kmer_size+1):
-			kmer = genome_seq[i:(i+kmer_size)]
-			if kmer not in kmers:
-				kmers[kmer] = 1
-			else:
-				kmers[kmer] = kmers[kmer] + 1
-
-		#for kmer, count in kmers.iteritems():
-		#	sys.stderr.write("{}\t{}\n".format(kmer, count))
-
-		return kmers
-
-"""
-The module takes kmer size argument and allows to build kmer database of different size.
-It also takes a kmer_type argument for allowing two approaches to search kmers that cover target snps:
-1) fetch all eligible kmers; fetch_all_snp_kmers()
-2) fetch kmers whose target snp was at the center; fetch_center_snp_kmers().
-
-Upadate: 07/01/18
-Using the following format for the sake of simplicity
-id/glob_pos: 11111
-allele_pos_on_kmer: 3
-kmer_seq(REF/+): ATGC
-kmer_seq(ALT/+): ATTC
-kmer_seq(REF/-): GCAT
-kmer_seq(ALT/-): GAAT
-"""
-def fetch_snp_kmers(genome_seq, snp_pos, snp_alleles, kmer_size, kmer_type, coords=None):
-	if kmer_type == 'all':
-		return fetch_all_snp_kmers(genome_seq, snp_pos, snp_alleles, kmer_size, coords)
-	elif kmer_type == 'center':
-		return fetch_center_snp_kmers(genome_seq, snp_pos, snp_alleles, kmer_size, coords)
-	else:
-		sys.exit("the specified kmer_type value was not recognized by the program: {}".format(kmer_type))
-
-def fetch_all_snp_kmers(genome_seq, snp_pos, snp_alleles, kmer_size, coords=None):
-	sys.stderr.write("[searching] start to search {}-mers\n".format(kmer_size))
-
-	inds_map = None
-	if coords is not None:
-		inds_map = [None for i in range(len(genome_seq))]
-
-		for i, coord in enumerate(coords):
-			for j in range(int(coord[1]), int(coord[2])+1):
-				inds_map[j] = i
-
-	kmers = []
-	for ri, pos in enumerate(snp_pos):
-		kmer_start = int(pos)-kmer_size+1
-		kmer_end = int(pos)+kmer_size-1
-
-		if inds_map is not None:
-			if inds_map[int(pos)] is None:
-				continue
-
-			cur_coord = coords[inds_map[int(pos)]]
-			coord_start, coord_end = int(cur_coord[1]), int(cur_coord[2])
-			kmer_start, kmer_end = max(coord_start, kmer_start), min(coord_end, kmer_end)
-
-		if kmer_end - kmer_start + 1 >= kmer_size:
-			subseq = genome_seq[kmer_start:(kmer_end+1)]
-
-			for i in range(len(subseq)-kmer_size+1):
-				kmer = subseq[i:(i+kmer_size)]
-
-				var_pos = kmer_size-i-1
-				
-				kmer = kmer[:var_pos]+snp_alleles[ri][0]+kmer[var_pos+1:]
-				akmer = kmer[:var_pos]+snp_alleles[ri][1]+kmer[var_pos+1:]
-
-				rc_kmer = revcomp(kmer)
-				rc_akmer = revcomp(akmer)
-
-				kmers.append([pos, var_pos, kmer, akmer, rc_kmer, rc_akmer])
-	sys.stderr.write("	a total of {} kmers was found\n".format(len(kmers)))
-	return kmers
-
 def load_msa(msa_path):
 	genome_msa = dict()
 
@@ -220,8 +116,11 @@ def fetch_all_from_msa(genome_seqs, ref_seq, snp_pos, snp_alleles, kmer_size, co
 				if len(kmer) != 31 or len(akmer) != 31:
 					continue
 
-				rc_kmer = revcomp(kmer)
-				rc_akmer = revcomp(akmer)
+				rc_kmer, wc_flag = revcomp(kmer)
+				rc_akmer, wc_flag_a = revcomp(akmer)
+
+				if wc_flag is True or wc_flag_a is True:
+					continue
 
 				kmer_records.append([pos, var_pos, kmer, akmer, rc_kmer, rc_akmer])
 
@@ -305,7 +204,23 @@ def revcomp(seq):
 		'H':'N',
 		'V':'N'
 	}
-	return ''.join([complement[_] for _ in seq[::-1]])
+
+	conv_base = {
+		'A':'T',
+		'T':'A',
+		'G':'C',
+		'C':'G'
+	}
+
+	rc_arr = []
+	wildcard_flag = False
+	for _ in seq[::-1]:
+		rc_arr.append(_)
+		if _ not in conv_base:
+			wildcard_flag = True
+
+
+	return ''.join(rc_arr), wildcard_flag
 
 def dump_tsv(kmers, snp_kmer_path):
 	with open(snp_kmer_path, 'w') as fh:
