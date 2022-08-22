@@ -215,7 +215,7 @@ def revcomp(seq):
 	rc_arr = []
 	wildcard_flag = False
 	for _ in seq[::-1]:
-		rc_arr.append(_)
+		rc_arr.append(complement[_])
 		if _ not in conv_base:
 			wildcard_flag = True
 
