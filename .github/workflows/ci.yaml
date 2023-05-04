@@ -29,7 +29,7 @@ jobs:
         mamba-version: "*"
         python-version: ${{ matrix.python-version }}
         channels: conda-forge,bioconda
-        environment-file: conda_env.yml
+        environment-file: conda_env.yaml
         activate-environment: gt_pro
     - name: GT_Pro make
       shell: bash -l {0}
