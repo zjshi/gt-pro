@@ -1,0 +1,12 @@
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.9
+  - pigz=2.6
+  - lbzip2=2.5
+  - lz4=4.3.2
+  - kmc=3.2.1
+  - numpy=1.24.3
+  - biopython=1.81
