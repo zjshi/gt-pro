@@ -34,10 +34,11 @@ Feel free to skip this section if you are looking for quick usage or examples.
 
 ## Dependencies
 
-* Python3  
-* pigz (Optional; A parallel implementation of gzip for modern multi-processor, multi-core machines; https://zlib.net/pigz/)
-* lbzip2 (Optional; A free, multi-threaded compression utility with support for bzip2 compressed file format; http://lbzip2.org/)
-* lz4 (Optional; Extremely Fast Compression algorithm; http://www.lz4.org)
+* Python3 (>3.6.9)  
+* pigz (>=2.6; Optional; A parallel implementation of gzip for modern multi-processor, multi-core machines; https://zlib.net/pigz/)
+* lbzip2 (>=2.5; Optional; A free, multi-threaded compression utility with support for bzip2 compressed file format; http://lbzip2.org/)
+* lz4 (>=1.9.3; Optional; Extremely Fast Compression algorithm; http://www.lz4.org)
+* GNU C Compiler (newer than 5.4.0)
 
 Note:
 
@@ -315,7 +316,10 @@ Each species directory should contains the following items:
 4. a VCF file named 'core_snps.vcf' describing SNP sites in the coordinate of the reference genome in 2 and genotypes across genomes in 1
 5. (Optional) a tsv file named 'coords.tsv' describing core genome regions that GT-Pro will use for k-mer extraction.
 
-Both `msa.fa` and `core_snps.vcf` are in standard format. In our paper, we mainly used [MUMmer4](https://mummer4.github.io/) to generate these files. Note that MUMmer4 does not include both files as its standard output and so please expect some addition effort converting MUMmer4 output. If you want to skip that, we recommend using [CallM](https://github.com/zjshi/CallM) which takes 1 and 2 and generates 3, 4 and 5 for you.
+Both `msa.fa` and `core_snps.vcf` are in standard format. In our paper, we mainly used [MUMmer4](https://mummer4.github.io/) to generate these files. Note that MUMmer4 does not include both files as its standard output and so please expect some addition effort converting MUMmer4 output. If you want to skip that, we recommend using [Maast](https://github.com/zjshi/Maast) which takes 1 and 2 and generates 3, 4 and 5 for you.
+
+Note:
+* we now have a protocol help build customized GT-Pro database, please see [Identifying species-specific k-mers for fast and accurate metagenotyping with Maast and GT-Pro] (https://www.sciencedirect.com/science/article/pii/S2666166722008449)
 
 The `coords.tsv` has three fields including chrom, start and end and each row specifies a core genome region on a contig (chrom) starting from start to the end. We generated the file again mainly using MUMmer4. This argument is optional, if not supplied, GT-Pro will use all genomic regions when possible.
 
