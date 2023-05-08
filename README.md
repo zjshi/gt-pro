@@ -16,7 +16,7 @@ To genotype a microbiome, GT-Pro takes as input one or more shotgun metagenomics
 
 ## How to cite
 
-If you find GT-Pro helpful, please consider citing our Biorxiv paper for now: Zhou Jason Shi, Boris Dimitrov, Chunyu Zhao, Stephen Nayfach, Katherine S. Pollard; "Ultra-rapid metagenotyping of the human gut microbiome"; bioRxiv 2020.06.12.149336; doi: https://doi.org/10.1101/2020.06.12.149336
+If you find GT-Pro helpful, please consider citing our paper: Shi, Z.J., Dimitrov, B., Zhao, C. et al. Fast and accurate metagenotyping of the human gut microbiome with GT-Pro. Nat Biotechnol 40, 507–516 (2022). https://doi.org/10.1038/s41587-021-01102-3
 
 ## Downloading datasets associated with GT-Pro publication 
 
@@ -67,6 +67,10 @@ The main program (`GT_Pro`) should be found in the same directory as `/path/to/g
 GT-Pro requires a C++ compiler that is compatible with C++ 11 standards to work properly. All the tests have been done and passed with clang-900.0.38, but it should be compatible for GNU C Compiler (newer than 5.4.0). We have not tested GT-Pro with older compilers, but we expect it to run similiarly as long as it compiles successfully.  
 
 To use GT-Pro in a computing environment where the compilation does not go through. This [prebuilt version](https://github.com/zjshi/gt-pro/releases/tag/v1.0.1) may be used as an alternative. But we still recommend a compilation when possible.  
+
+<b>Notes for Conda env</b>
+
+Thanks to [Nick Youngblut] (https://github.com/nick-youngblut), we now have conda environment files.
 
 ## Dowloading default database 
 
