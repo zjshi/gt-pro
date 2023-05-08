@@ -286,13 +286,13 @@ Note:
 
 ### Additional dependencies
 
-* KMC3  
+* KMC3 (>=3.2.1)  
 KMC3 and its installation guidelines can be found [here](https://github.com/refresh-bio/KMC)
 
-* [Biopython](https://biopython.org/)  
+* [Biopython](https://biopython.org/) (>=1.79)  
 May be installed with `pip install biopython`  
 
-* [Numpy](https://numpy.org/)  
+* [Numpy](https://numpy.org/) (>=1.19.5)  
 May be installed with `pip install numpy`
 
 ### Building usage 
