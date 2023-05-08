@@ -1,0 +1,43 @@
+name: GT-Pro
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    name: build (${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ubuntu-latest
+    env:
+      DATADIR: data
+    strategy:
+      matrix:
+        python-version: [3.9]
+        build_type: [Release]
+        compiler: [g++-9]
+        include:
+          - compiler: g++-9
+            cxx: g++-9
+            cc: gcc-9
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+    - name: Checkout submodules
+      run: git submodule update --init --recursive
+    - uses: conda-incubator/setup-miniconda@v2
+      with:
+        miniconda-version: 'latest'
+        auto-update-conda: true
+        mamba-version: "*"
+        python-version: ${{ matrix.python-version }}
+        channels: conda-forge,bioconda
+        environment-file: conda_env.yaml
+        activate-environment: gt_pro
+    - name: GT_Pro make
+      shell: bash -l {0}
+      working-directory: ${{runner.workspace}}/gt-pro/
+      run: |
+        make
+    - name: GT-Pro test
+      shell: bash -l {0}
+      working-directory: ${{runner.workspace}}/gt-pro/
+      run: |
+        ./GT_Pro -h

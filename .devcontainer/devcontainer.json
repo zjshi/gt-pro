@@ -1,0 +1,26 @@
+{
+    "name": "gt_pro_dev",
+    "image": "mcr.microsoft.com/devcontainers/python:0-3.9",
+    "postCreateCommand": "bash .devcontainer/setup.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "GitHub.copilot",
+                "eamodio.gitlens",
+                "codezombiech.gitignore",
+                "ms-python.python",
+                "Gruntfuggly.todo-tree",
+                "ms-azuretools.vscode-docker",
+                "ms-vscode-remote.remote-ssh"
+            ]
+        }
+	},
+    "features": {
+        "ghcr.io/devcontainers/features/aws-cli:1": {
+            "version": "latest"
+        },
+        "ghcr.io/mamba-org/devcontainer-features/micromamba:1": {
+            "version": "latest"
+        }
+    }
+}
